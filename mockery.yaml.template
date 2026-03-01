@@ -1,0 +1,31 @@
+# Mockery configuration template for Sentiae services
+# Copy this file to your service root as `.mockery.yaml` and customize.
+#
+# Usage:
+#   make mocks          # generate all mocks
+#   mockery             # run directly
+#   mockery --dry-run   # preview what would be generated
+#
+# Docs: https://vektra.github.io/mockery/latest/
+
+with-expecter: true
+mockname: "Mock{{.InterfaceName}}"
+filename: "mock_{{.InterfaceName | snakecase}}.go"
+dir: "internal/mocks"
+outpkg: "mocks"
+packages:
+  # Repository interfaces — use `all: true` to mock every interface in the package
+  # github.com/sentiae/YOUR-SERVICE/internal/repository:
+  #   config:
+  #     all: true
+
+  # Use case interfaces — list explicitly to control which interfaces get mocked
+  # github.com/sentiae/YOUR-SERVICE/internal/usecase:
+  #   interfaces:
+  #     MyUseCase:
+  #     MyGateway:
+
+  # Port interfaces (if using hexagonal architecture)
+  # github.com/sentiae/YOUR-SERVICE/internal/port:
+  #   config:
+  #     all: true
