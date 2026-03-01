@@ -1,0 +1,193 @@
+# =============================================================================
+# Platform-Kit Shared Makefile Targets
+# =============================================================================
+# Include this file in each service's Makefile:
+#   PLATFORM_KIT_DIR := $(shell cd .. && pwd)/platform-kit
+#   include $(PLATFORM_KIT_DIR)/Makefile.include
+#
+# Required variables (set BEFORE including):
+#   APP_NAME       - service binary name (e.g., identity-service)
+#
+# Optional variables (override to customize):
+#   DOCKER_IMAGE   - Docker image name (default: sentiae/$(APP_NAME))
+#   DATABASE_URL   - PostgreSQL connection string
+#   ATLAS_ENV      - Atlas environment name (default: local)
+#   MIGRATE_PATH   - Legacy golang-migrate path (default: ./migrations)
+#   PROTO_DIR      - Protobuf source directory (default: api/proto)
+#   PROTO_CMD      - Proto generation command (default: buf generate)
+#   GQLGEN_CONFIG  - gqlgen config file (default: gqlgen.yml)
+#   DOCKER_BUILD_CONTEXT - Docker build context path (default: .)
+#   DOCKER_BUILD_FILE    - Dockerfile path (default: Dockerfile)
+# =============================================================================
+
+# Defaults (can be overridden before include)
+DOCKER_IMAGE   ?= sentiae/$(APP_NAME)
+DATABASE_URL   ?= postgres://postgres:postgres@localhost:5432/$(APP_NAME)?sslmode=disable
+ATLAS_ENV      ?= local
+ATLAS          ?= $(shell which atlas 2>/dev/null || echo "$(HOME)/.local/bin/atlas")
+MIGRATE_PATH   ?= ./migrations
+PROTO_DIR      ?= api/proto
+PROTO_CMD      ?= buf generate
+GQLGEN_CONFIG  ?= gqlgen.yml
+DOCKER_BUILD_CONTEXT ?= .
+DOCKER_BUILD_FILE    ?= Dockerfile
+VERSION        ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
+BUILD_TIME     ?= $(shell date -u '+%Y-%m-%d_%H:%M:%S')
+LDFLAGS        ?= -w -s -X main.Version=$(VERSION) -X main.BuildTime=$(BUILD_TIME)
+
+# =============================================================================
+# Help
+# =============================================================================
+.PHONY: help
+help: ## Show all available targets with descriptions
+	@echo "==================================================================="
+	@echo "$(APP_NAME) — Makefile Targets"
+	@echo "==================================================================="
+	@grep -hE '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk -F ':.*?## ' '!seen[$$1]++' | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "\033[36m%-25s\033[0m %s\n", $$1, $$2}'
+	@echo "==================================================================="
+
+# =============================================================================
+# Development
+# =============================================================================
+.PHONY: dev
+dev: ## Start development server with hot reload (Air)
+	@command -v air >/dev/null 2>&1 || { echo "Installing Air..."; go install github.com/cosmtrek/air@latest; }
+	air -c .air.toml || go run cmd/server/main.go
+
+.PHONY: run
+run: ## Run the application locally
+	go run cmd/server/main.go
+
+.PHONY: deps
+deps: ## Download and tidy dependencies
+	go mod download
+	go mod tidy
+
+# =============================================================================
+# Build
+# =============================================================================
+.PHONY: build
+build: ## Build the application binary
+	go build -ldflags "$(LDFLAGS)" -o bin/$(APP_NAME) cmd/server/main.go
+
+.PHONY: build-prod
+build-prod: ## Build for production (static Linux binary)
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -ldflags "$(LDFLAGS)" -o bin/$(APP_NAME) cmd/server/main.go
+
+# =============================================================================
+# Testing
+# =============================================================================
+.PHONY: test
+test: ## Run tests with race detector
+	go test -race -timeout 5m ./...
+
+.PHONY: test-v
+test-v: ## Run tests verbosely with race detector
+	go test -v -race -timeout 5m ./...
+
+.PHONY: test-coverage
+test-coverage: ## Run tests with coverage report
+	go test -race -coverprofile=coverage.out -covermode=atomic ./...
+	go tool cover -html=coverage.out -o coverage.html
+	@echo "Coverage report: coverage.html"
+
+.PHONY: test-integration
+test-integration: ## Run integration tests (build tag: integration)
+	go test -race -tags integration -timeout 10m ./...
+
+.PHONY: test-e2e
+test-e2e: ## Run end-to-end tests (build tag: e2e)
+	go test -race -tags e2e -timeout 15m ./test/e2e/...
+
+# =============================================================================
+# Code Quality
+# =============================================================================
+.PHONY: lint
+lint: ## Run golangci-lint
+	golangci-lint run --timeout 5m
+
+.PHONY: fmt
+fmt: ## Format Go code
+	go fmt ./...
+
+.PHONY: vet
+vet: ## Run go vet
+	go vet ./...
+
+.PHONY: check
+check: fmt vet lint ## Run all code quality checks (fmt + vet + lint)
+
+# =============================================================================
+# Code Generation
+# =============================================================================
+.PHONY: generate
+generate: ## Run all code generation (proto + mocks + gqlgen)
+	@$(MAKE) gen-proto 2>/dev/null || true
+	@$(MAKE) mocks 2>/dev/null || true
+	@$(MAKE) gen-gql 2>/dev/null || true
+	@echo "Code generation complete"
+
+.PHONY: mocks
+mocks: ## Generate mocks using mockery
+	@rm -rf internal/mocks
+	mockery
+
+.PHONY: gen-proto
+gen-proto: ## Generate gRPC code from proto files
+	@if [ -d "$(PROTO_DIR)" ]; then \
+		$(PROTO_CMD); \
+	else \
+		echo "No proto directory found at $(PROTO_DIR), skipping"; \
+	fi
+
+.PHONY: gen-gql
+gen-gql: ## Generate GraphQL code using gqlgen
+	@if [ -f "$(GQLGEN_CONFIG)" ]; then \
+		go run github.com/99designs/gqlgen generate; \
+	else \
+		echo "No gqlgen config found at $(GQLGEN_CONFIG), skipping"; \
+	fi
+
+# =============================================================================
+# Atlas Migrations (schema-as-code)
+# =============================================================================
+.PHONY: migration-generate
+migration-generate: ## Generate Atlas migration by diffing GORM models (NAME=description)
+	@if [ -z "$(NAME)" ]; then \
+		echo "Usage: make migration-generate NAME=description"; \
+		exit 1; \
+	fi
+	$(ATLAS) migrate diff $(NAME) --env $(ATLAS_ENV)
+
+.PHONY: migration-apply
+migration-apply: ## Apply pending Atlas migrations
+	$(ATLAS) migrate apply --env $(ATLAS_ENV) --url "$(DATABASE_URL)"
+
+.PHONY: migration-status
+migration-status: ## Show Atlas migration status
+	$(ATLAS) migrate status --env $(ATLAS_ENV) --url "$(DATABASE_URL)"
+
+# =============================================================================
+# Docker
+# =============================================================================
+.PHONY: docker-build
+docker-build: ## Build Docker image
+	docker build \
+		--build-arg VERSION=$(VERSION) \
+		--build-arg BUILD_TIME=$(BUILD_TIME) \
+		-f $(DOCKER_BUILD_FILE) \
+		-t $(DOCKER_IMAGE):$(VERSION) \
+		-t $(DOCKER_IMAGE):latest \
+		$(DOCKER_BUILD_CONTEXT)
+
+.PHONY: docker-run
+docker-run: ## Run application in Docker
+	docker run -p 8080:8080 --env-file .env $(DOCKER_IMAGE):latest
+
+# =============================================================================
+# Cleanup
+# =============================================================================
+.PHONY: clean
+clean: ## Clean build artifacts
+	rm -rf bin/
+	rm -f coverage.out coverage.html
