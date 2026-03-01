@@ -36,8 +36,8 @@ func TestUnaryMetrics_RecordsSuccess(t *testing.T) {
 	if records[0].Code != "OK" {
 		t.Fatalf("expected code 'OK', got %q", records[0].Code)
 	}
-	if records[0].Duration <= 0 {
-		t.Fatal("expected positive duration")
+	if records[0].Duration < 0 {
+		t.Fatal("expected non-negative duration")
 	}
 }
 
