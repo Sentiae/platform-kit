@@ -3,7 +3,9 @@ module github.com/sentiae/platform-kit
 go 1.25.4
 
 require (
+	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/spf13/viper v1.21.0
+	golang.org/x/time v0.14.0
 	google.golang.org/grpc v1.79.1
 )
 
