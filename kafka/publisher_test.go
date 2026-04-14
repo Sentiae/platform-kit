@@ -71,6 +71,39 @@ func TestNewPublisher_Defaults(t *testing.T) {
 	if pub.cfg.MaxAttempts != 3 {
 		t.Errorf("MaxAttempts = %d, want %d", pub.cfg.MaxAttempts, 3)
 	}
+	if pub.cfg.RequiredAcks != -1 {
+		t.Errorf("RequiredAcks = %d, want %d (all replicas)", pub.cfg.RequiredAcks, -1)
+	}
+}
+
+func TestNewPublisher_RequiredAcksExplicit(t *testing.T) {
+	pub, err := NewPublisher(PublisherConfig{
+		Brokers:      []string{"localhost:9092"},
+		Source:       "test-service",
+		RequiredAcks: 1, // leader only
+	})
+	if err != nil {
+		t.Fatalf("NewPublisher() error = %v", err)
+	}
+	defer pub.Close()
+
+	if pub.cfg.RequiredAcks != 1 {
+		t.Errorf("RequiredAcks = %d, want %d (explicit leader-only)", pub.cfg.RequiredAcks, 1)
+	}
+}
+
+func TestNoopPublisher(t *testing.T) {
+	var pub Publisher = NewNoopPublisher()
+
+	if err := pub.Publish(t.Context(), "test.event.created", EventData{ResourceType: "test", ResourceID: "1"}); err != nil {
+		t.Errorf("NoopPublisher.Publish() error = %v", err)
+	}
+	if err := pub.PublishBatch(t.Context(), []Event{{Type: "test.event.created", Data: EventData{ResourceType: "test", ResourceID: "1"}}}); err != nil {
+		t.Errorf("NoopPublisher.PublishBatch() error = %v", err)
+	}
+	if err := pub.Close(); err != nil {
+		t.Errorf("NoopPublisher.Close() error = %v", err)
+	}
 }
 
 func TestPublisher_ValidatesEventType(t *testing.T) {

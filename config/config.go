@@ -19,6 +19,7 @@ package config
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/spf13/viper"
 )
@@ -37,6 +38,22 @@ type Options struct {
 
 	// ConfigPaths are directories to search for config files.
 	ConfigPaths []string
+
+	// BindEnvs is a list of explicit [configPath, envVarName] bindings for nested
+	// config fields where viper's AutomaticEnv doesn't resolve during Unmarshal.
+	// Example: [][2]string{{"database.host", "APP_DATABASE_HOST"}}
+	BindEnvs [][2]string
+
+	// OnReload, if non-nil, starts a file watcher on ConfigFile (or the first
+	// resolved file under ConfigPaths) and invokes the callback on change. The
+	// callback should re-call Load with the same target to refresh live values.
+	// Only values safe to change at runtime (log levels, feature toggles,
+	// non-secret strings) should be read via hot-reload; secrets, connection
+	// pools, and socket bindings still require a restart.
+	OnReload func()
+
+	// ReloadDebounce rate-limits reload firings. Defaults to 2s when zero.
+	ReloadDebounce time.Duration
 }
 
 // Load populates the target struct from environment variables, config files,
@@ -55,6 +72,11 @@ func Load(target any, opts Options) error {
 	}
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
 	v.AutomaticEnv()
+
+	// Bind explicit env vars for nested fields.
+	for _, b := range opts.BindEnvs {
+		_ = v.BindEnv(b[0], b[1])
+	}
 
 	// Read config file if specified.
 	if opts.ConfigFile != "" {
@@ -75,6 +97,20 @@ func Load(target any, opts Options) error {
 	// Unmarshal into the target struct.
 	if err := v.Unmarshal(target); err != nil {
 		return fmt.Errorf("unmarshaling config: %w", err)
+	}
+
+	if opts.OnReload != nil {
+		watchPath := opts.ConfigFile
+		if watchPath == "" {
+			watchPath = v.ConfigFileUsed()
+		}
+		if watchPath != "" {
+			reloader, err := NewHotReloader([]string{watchPath}, opts.OnReload, opts.ReloadDebounce)
+			if err != nil {
+				return fmt.Errorf("starting hot-reloader: %w", err)
+			}
+			go reloader.Start()
+		}
 	}
 
 	return nil

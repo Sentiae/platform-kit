@@ -16,16 +16,22 @@ var _ Consumer = (*KafkaConsumer)(nil)
 
 // ConsumerConfig holds Kafka consumer settings.
 type ConsumerConfig struct {
-	Brokers        []string      // Kafka broker addresses
-	GroupID        string        // Consumer group ID
-	Topics         []string      // Topics to consume from
-	MinBytes       int           // Min batch size (default: 1)
-	MaxBytes       int           // Max batch size (default: 10MB)
-	MaxWait        time.Duration // Max wait for batch (default: 10s)
-	StartOffset    int64         // kafka.FirstOffset or kafka.LastOffset (default: LastOffset)
-	MaxRetries     int           // Max handler retries before dead-letter (default: 3)
+	Brokers        []string       // Kafka broker addresses
+	GroupID        string         // Consumer group ID
+	Topics         []string       // Topics to consume from
+	MinBytes       int            // Min batch size (default: 1)
+	MaxBytes       int            // Max batch size (default: 10MB)
+	MaxWait        time.Duration  // Max wait for batch (default: 10s)
+	StartOffset    int64          // kafka.FirstOffset or kafka.LastOffset (default: LastOffset)
+	MaxRetries     int            // Max handler retries before dead-letter (default: 3)
 	DeadLetterFunc DeadLetterFunc // Called when a message exhausts retries (optional)
 	Logger         *slog.Logger
+
+	// DisableSchemaValidation skips the per-message taxonomy check. Default
+	// false. When enabled, every message's payload is validated against the
+	// registered schema before the handler is invoked; on failure the
+	// message is routed to DLQ with reason="schema_validation_failed".
+	DisableSchemaValidation bool
 }
 
 // DeadLetterFunc is called when a message fails after all retries.
@@ -69,6 +75,22 @@ type KafkaConsumer struct {
 	handlers map[string]EventHandler
 	readers  []*kafka.Reader
 	mu       sync.Mutex
+
+	// health tracks per-topic last-processed info for /healthz/events.
+	health   map[string]*topicHealth
+	healthMu sync.RWMutex
+}
+
+// topicHealth is updated on every processed message.
+type topicHealth struct {
+	Topic          string    `json:"topic"`
+	GroupID        string    `json:"group_id"`
+	LastOffset     int64     `json:"last_offset"`
+	LastEventType  string    `json:"last_event_type"`
+	LastProcessed  time.Time `json:"last_processed"`
+	MessagesOK     int64     `json:"messages_ok"`
+	MessagesFailed int64     `json:"messages_failed"`
+	Lag            int64     `json:"lag"`
 }
 
 // NewConsumer creates a new Kafka consumer.
@@ -87,7 +109,38 @@ func NewConsumer(cfg ConsumerConfig) (*KafkaConsumer, error) {
 	return &KafkaConsumer{
 		cfg:      cfg,
 		handlers: make(map[string]EventHandler),
+		health:   make(map[string]*topicHealth),
 	}, nil
+}
+
+// Health returns a snapshot of per-topic processing stats. Safe for /healthz.
+func (c *KafkaConsumer) Health() []topicHealth {
+	c.healthMu.RLock()
+	defer c.healthMu.RUnlock()
+	out := make([]topicHealth, 0, len(c.health))
+	for _, h := range c.health {
+		// Update lag lazily from the current reader stats.
+		snap := *h
+		for _, r := range c.readers {
+			if r.Config().Topic == h.Topic {
+				snap.Lag = r.Lag()
+				break
+			}
+		}
+		out = append(out, snap)
+	}
+	return out
+}
+
+// SubscribedTypes returns the set of event types this consumer has handlers for.
+func (c *KafkaConsumer) SubscribedTypes() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, 0, len(c.handlers))
+	for t := range c.handlers {
+		out = append(out, t)
+	}
+	return out
 }
 
 // Subscribe registers a handler for a specific event type.
@@ -161,6 +214,22 @@ func (c *KafkaConsumer) consumeTopic(ctx context.Context, reader *kafka.Reader, 
 			continue
 		}
 
+		// Schema validation: reject payloads that don't match the taxonomy.
+		if !c.cfg.DisableSchemaValidation {
+			if err := c.validateMessagePayload(event); err != nil {
+				c.cfg.Logger.Error("schema validation failed",
+					"topic", topic,
+					"offset", msg.Offset,
+					"event_type", event.Type,
+					"error", err,
+				)
+				c.sendToDeadLetter(ctx, msg, event.Type, 0, fmt.Errorf("schema_validation_failed: %w", err))
+				c.recordFailure(topic, event.Type, msg.Offset)
+				_ = reader.CommitMessages(ctx, msg)
+				continue
+			}
+		}
+
 		// Retry loop — commit only on success.
 		var lastErr error
 		handled := false
@@ -182,6 +251,9 @@ func (c *KafkaConsumer) consumeTopic(ctx context.Context, reader *kafka.Reader, 
 
 		if !handled {
 			c.sendToDeadLetter(ctx, msg, event.Type, c.cfg.MaxRetries, lastErr)
+			c.recordFailure(topic, event.Type, msg.Offset)
+		} else {
+			c.recordSuccess(topic, event.Type, msg.Offset)
 		}
 
 		// Commit after success OR after dead-lettering to avoid infinite retry loops.
@@ -217,6 +289,44 @@ func (c *KafkaConsumer) sendToDeadLetter(ctx context.Context, msg kafka.Message,
 		RetryCount: retryCount,
 		LastError:  lastErr,
 	})
+}
+
+// validateMessagePayload decodes the CloudEvent data and validates it
+// against the registered schema for the event type.
+func (c *KafkaConsumer) validateMessagePayload(event CloudEvent) error {
+	var generic map[string]any
+	if err := json.Unmarshal(event.Data, &generic); err != nil {
+		return fmt.Errorf("data is not a JSON object: %w", err)
+	}
+	return ValidateRawPayload(event.Type, generic)
+}
+
+func (c *KafkaConsumer) recordSuccess(topic, eventType string, offset int64) {
+	c.healthMu.Lock()
+	h, ok := c.health[topic]
+	if !ok {
+		h = &topicHealth{Topic: topic, GroupID: c.cfg.GroupID}
+		c.health[topic] = h
+	}
+	h.LastOffset = offset
+	h.LastEventType = eventType
+	h.LastProcessed = time.Now().UTC()
+	h.MessagesOK++
+	c.healthMu.Unlock()
+}
+
+func (c *KafkaConsumer) recordFailure(topic, eventType string, offset int64) {
+	c.healthMu.Lock()
+	h, ok := c.health[topic]
+	if !ok {
+		h = &topicHealth{Topic: topic, GroupID: c.cfg.GroupID}
+		c.health[topic] = h
+	}
+	h.LastOffset = offset
+	h.LastEventType = eventType
+	h.LastProcessed = time.Now().UTC()
+	h.MessagesFailed++
+	c.healthMu.Unlock()
 }
 
 // Close closes all readers.

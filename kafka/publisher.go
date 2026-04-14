@@ -24,6 +24,13 @@ type PublisherConfig struct {
 	MaxAttempts  int           // Max write retries (default: 3)
 	WriteTimeout time.Duration // Write deadline (default: 10s)
 	Logger       *slog.Logger
+
+	// DisableSchemaValidation turns off the event-taxonomy validation on
+	// Publish / PublishBatch. Default false. Set to true ONLY for tests or
+	// narrow migration contexts where a service is temporarily emitting
+	// ad-hoc event types — production must keep validation on so the
+	// registry remains the source of truth.
+	DisableSchemaValidation bool
 }
 
 func (c *PublisherConfig) defaults() {
@@ -44,6 +51,14 @@ func (c *PublisherConfig) defaults() {
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
+	}
+	// RequiredAcks 0 means "no acknowledgment" in kafka-go, which silently
+	// drops durability. Default to -1 (all in-sync replicas) unless the
+	// caller explicitly set a non-zero value. Callers wanting no-ack mode
+	// must set RequiredAcks to an explicit positive sentinel and handle
+	// mapping themselves, or accept this safe default.
+	if c.RequiredAcks == 0 {
+		c.RequiredAcks = -1
 	}
 }
 
@@ -81,6 +96,11 @@ func NewPublisher(cfg PublisherConfig) (*KafkaPublisher, error) {
 func (p *KafkaPublisher) Publish(ctx context.Context, eventType string, data EventData) error {
 	if err := ValidateEventType(eventType); err != nil {
 		return err
+	}
+	if !p.cfg.DisableSchemaValidation {
+		if err := ValidateEventPayload(eventType, data); err != nil {
+			return fmt.Errorf("publish rejected: %w", err)
+		}
 	}
 
 	ce, payload, err := newCloudEvent(p.cfg.Source, eventType, data, "")
@@ -128,6 +148,11 @@ func (p *KafkaPublisher) PublishBatch(ctx context.Context, events []Event) error
 	for _, e := range events {
 		if err := ValidateEventType(e.Type); err != nil {
 			return err
+		}
+		if !p.cfg.DisableSchemaValidation {
+			if err := ValidateEventPayload(e.Type, e.Data); err != nil {
+				return fmt.Errorf("publish batch rejected for %s: %w", e.Type, err)
+			}
 		}
 
 		ce, payload, err := newCloudEvent(p.cfg.Source, e.Type, e.Data, e.IdempotencyKey)

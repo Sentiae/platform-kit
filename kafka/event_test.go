@@ -15,8 +15,9 @@ func TestValidateEventType(t *testing.T) {
 		{"valid three-part", "identity.user.registered", false},
 		{"valid with underscore", "identity.user.password_changed", false},
 		{"valid with numbers", "identity.user2.registered", false},
+		{"valid four parts", "canvas.debug.session.created", false},
+		{"valid five parts", "canvas.marketplace.publisher.connected", false},
 		{"missing action", "identity.user", true},
-		{"too many parts", "identity.user.foo.bar", true},
 		{"empty", "", true},
 		{"uppercase", "Identity.User.Registered", true},
 		{"starts with number", "1identity.user.registered", true},
@@ -64,6 +65,18 @@ func TestTopicFromEventType(t *testing.T) {
 			prefix:    "myapp",
 			eventType: "auth.session.created",
 			want:      "myapp.auth.session",
+		},
+		{
+			name:      "four-part event type",
+			prefix:    "sentiae",
+			eventType: "canvas.debug.session.created",
+			want:      "sentiae.canvas.debug",
+		},
+		{
+			name:      "five-part event type",
+			prefix:    "sentiae",
+			eventType: "canvas.marketplace.publisher.connected",
+			want:      "sentiae.canvas.marketplace",
 		},
 	}
 

@@ -47,4 +47,3 @@ func StreamRecovery(logger *slog.Logger) grpc.StreamServerInterceptor {
 		return handler(srv, ss)
 	}
 }
-

@@ -14,13 +14,15 @@ import (
 	"github.com/google/uuid"
 )
 
-// eventNameRe validates {domain}.{resource}.{action} format.
-var eventNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*\.[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$`)
+// eventNameRe validates event types with 3+ dot-separated segments:
+// {domain}.{resource}.{action} or {domain}.{resource}.{sub}.{action}, etc.
+var eventNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*(\.[a-z][a-z0-9_]*){2,}$`)
 
-// ValidateEventType checks that eventType follows {domain}.{resource}.{action}.
+// ValidateEventType checks that eventType has at least 3 dot-separated lowercase segments.
+// Examples: "identity.user.registered", "canvas.debug.session.created".
 func ValidateEventType(eventType string) error {
 	if !eventNameRe.MatchString(eventType) {
-		return fmt.Errorf("invalid event type %q: must match {domain}.{resource}.{action} (lowercase, e.g. identity.user.registered)", eventType)
+		return fmt.Errorf("invalid event type %q: must have 3+ dot-separated lowercase segments (e.g. identity.user.registered)", eventType)
 	}
 	return nil
 }
