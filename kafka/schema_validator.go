@@ -1,11 +1,121 @@
 package kafka
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 )
+
+// G17 — remote schema-registry verification.
+//
+// The in-process schema taxonomy (event_taxonomy.go) is the source of
+// truth for local validation. In multi-service deployments operators
+// may additionally run a Confluent-compatible schema registry that
+// stores the canonical schemas — services should then fetch the
+// *remote* latest schema on boot (publisher side) and on consume
+// (subscriber side) to catch taxonomy drift between services and the
+// registry.
+//
+// The verification is intentionally soft: mismatches are logged, not
+// failed, so a misconfigured registry cannot brick production.
+
+// VerifyConfig controls optional remote schema-registry verification.
+// Default zero-value disables both publish and consume checks — the
+// legacy local-only taxonomy path continues to run unchanged.
+type VerifyConfig struct {
+	// Registry is the Confluent-compatible schema-registry client.
+	// Passing nil disables verification.
+	Registry *SchemaRegistry
+	// TopicPrefix is the Kafka topic prefix used when deriving the
+	// Confluent subject name. Must match the prefix passed to
+	// RegisterAllSchemas.
+	TopicPrefix string
+	// ConsumeSideFetch enables a remote GetLatestSchema lookup inside
+	// FetchLatestSchemaForEvent so consumers can soft-compare the
+	// on-wire schema against the in-process taxonomy.
+	ConsumeSideFetch bool
+	// Logger is the sink for verification warnings. Defaults to the
+	// slog package default when nil.
+	Logger *slog.Logger
+}
+
+var (
+	verifyMu     sync.RWMutex
+	verifyConfig VerifyConfig
+)
+
+// ConfigureVerification sets the package-level verification config.
+// Wire this from the service's Kafka bootstrap right after
+// RegisterAllSchemas. Safe to call multiple times.
+func ConfigureVerification(cfg VerifyConfig) {
+	verifyMu.Lock()
+	verifyConfig = cfg
+	verifyMu.Unlock()
+}
+
+// getVerifyConfig returns a snapshot of the current verification
+// config. Cheap under read lock.
+func getVerifyConfig() VerifyConfig {
+	verifyMu.RLock()
+	defer verifyMu.RUnlock()
+	return verifyConfig
+}
+
+// verifyLogger returns the configured logger or slog default.
+func verifyLogger(cfg VerifyConfig) *slog.Logger {
+	if cfg.Logger != nil {
+		return cfg.Logger
+	}
+	return slog.Default()
+}
+
+// FetchLatestSchemaForEvent pulls the latest schema for an event from
+// the configured remote registry and soft-compares it against the
+// in-process taxonomy. Returns nil when no registry is configured, or
+// when ConsumeSideFetch is false. Warnings are logged; no error is
+// ever returned so consumers can stay in the hot path.
+//
+// Intended usage: call from the consumer middleware right after a
+// message is decoded, before handing off to the handler.
+func FetchLatestSchemaForEvent(ctx context.Context, eventType string) {
+	cfg := getVerifyConfig()
+	if cfg.Registry == nil || !cfg.ConsumeSideFetch {
+		return
+	}
+	entry, ok := LookupEvent(eventType)
+	if !ok {
+		return
+	}
+	subject := subjectForTopic(topicFromEventType(cfg.TopicPrefix, eventType))
+	remote, _, err := cfg.Registry.GetLatestSchema(ctx, subject)
+	if err != nil {
+		verifyLogger(cfg).Warn("schema-registry fetch failed",
+			"event_type", eventType,
+			"subject", subject,
+			"error", err,
+		)
+		return
+	}
+	if remote != entry.Schema {
+		verifyLogger(cfg).Warn("schema-registry drift detected",
+			"event_type", eventType,
+			"subject", subject,
+			"remote_schema_bytes", len(remote),
+			"local_schema_bytes", len(entry.Schema),
+		)
+	}
+}
+
+// VerifyPublishSchema runs a best-effort soft-compare against the
+// remote registry at publish time. Matches the semantics of
+// FetchLatestSchemaForEvent but is kept as a separate entry point so
+// call sites are self-documenting.
+func VerifyPublishSchema(ctx context.Context, eventType string) {
+	FetchLatestSchemaForEvent(ctx, eventType)
+}
 
 // schemaNode is the parsed form of a JSON Schema document. The validator
 // supports the subset used in the event taxonomy (type, required,

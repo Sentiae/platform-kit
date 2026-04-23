@@ -99,3 +99,46 @@ func (r *SchemaRegistry) CachedVersion(subject string) int {
 	defer r.mu.RUnlock()
 	return r.cache[subject]
 }
+
+// BootstrapResult summarizes a RegisterAllSchemas run.
+type BootstrapResult struct {
+	Registered int      // schemas successfully registered (or already present at the same version)
+	Skipped    int      // schemas the registry rejected as incompatible — left for manual review
+	Errors     []string // errors encountered per subject
+}
+
+// RegisterAllSchemas pushes every schema from the in-process event taxonomy
+// into an external Confluent-compatible registry. The subject name matches
+// the topic (topicPrefix + eventType with dots → hyphens, plus "-value"
+// suffix per the Confluent default subject strategy). Failures are logged
+// into the result rather than returned, so one dead event doesn't stop the
+// rest from registering — this keeps service startup resilient when the
+// taxonomy grows new events.
+//
+// Intended to be called once on service boot, behind a config flag so
+// environments without a schema-registry deployment aren't forced to
+// run one.
+func RegisterAllSchemas(ctx context.Context, registry *SchemaRegistry, topicPrefix string) BootstrapResult {
+	result := BootstrapResult{}
+	if registry == nil {
+		result.Errors = append(result.Errors, "registry client is nil")
+		return result
+	}
+
+	for _, ev := range AllEvents() {
+		subject := subjectForTopic(topicFromEventType(topicPrefix, ev.Type))
+		if _, err := registry.RegisterSchema(ctx, subject, ev.Schema); err != nil {
+			result.Errors = append(result.Errors, fmt.Sprintf("%s: %v", ev.Type, err))
+			result.Skipped++
+			continue
+		}
+		result.Registered++
+	}
+	return result
+}
+
+// subjectForTopic builds the Confluent default subject name for a topic
+// (TopicNameStrategy): "<topic>-value".
+func subjectForTopic(topic string) string {
+	return topic + "-value"
+}

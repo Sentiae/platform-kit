@@ -28,6 +28,11 @@ type Claims struct {
 	Email string
 	// Scopes is a custom "scopes" claim (e.g. ["org:<uuid>"]).
 	Scopes []string
+	// PlatformAdmin is a custom "platform_admin" boolean claim that
+	// downstream services (e.g. ops-service RequirePlatformAdmin) use
+	// to gate cross-tenant admin endpoints. Populated by identity-
+	// service when the user holds the platform_admin role. §18.2.
+	PlatformAdmin bool
 }
 
 // claimsCtxKey is the unexported context key for storing parsed claims.
@@ -69,6 +74,13 @@ func Auth(validator TokenValidator) func(http.Handler) http.Handler {
 func GetClaims(ctx context.Context) (Claims, bool) {
 	c, ok := ctx.Value(claimsCtxKey{}).(Claims)
 	return c, ok
+}
+
+// InjectClaimsForTest stashes the supplied claims on the context using
+// the same unexported key that Auth() would. Only intended for tests —
+// production code must route through Auth() so the token is validated.
+func InjectClaimsForTest(ctx context.Context, claims Claims) context.Context {
+	return context.WithValue(ctx, claimsCtxKey{}, claims)
 }
 
 func writeAuthError(w http.ResponseWriter, detail string) {

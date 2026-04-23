@@ -17,7 +17,10 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -44,6 +47,17 @@ type Options struct {
 	// Example: [][2]string{{"database.host", "APP_DATABASE_HOST"}}
 	BindEnvs [][2]string
 
+	// Profile selects a per-environment override file. When set (or when the
+	// APP_PROFILE / <EnvPrefix>_PROFILE env var is set), the loader first reads
+	// the base config.yaml and then layers config.<profile>.yaml on top so
+	// profile-specific values override the base. When empty the default
+	// profile is "dev". Unknown profiles are treated as valid (the override
+	// file is optional — a missing profile file is not an error).
+	//
+	// Precedence (lowest → highest):
+	//   defaults → ConfigFile/ConfigPaths base → profile override → env vars
+	Profile string
+
 	// OnReload, if non-nil, starts a file watcher on ConfigFile (or the first
 	// resolved file under ConfigPaths) and invokes the callback on change. The
 	// callback should re-call Load with the same target to refresh live values.
@@ -54,6 +68,60 @@ type Options struct {
 
 	// ReloadDebounce rate-limits reload firings. Defaults to 2s when zero.
 	ReloadDebounce time.Duration
+}
+
+// DefaultProfile is the profile applied when none is specified.
+const DefaultProfile = "dev"
+
+// validProfiles lists the recognized first-class environments. A profile
+// outside this set is still accepted (its override file is optional) so
+// services can define custom profiles (e.g. "canary") without code changes.
+var validProfiles = map[string]bool{
+	"dev":     true,
+	"staging": true,
+	"prod":    true,
+}
+
+// IsKnownProfile reports whether the given profile is a first-class, known
+// environment. Unknown profiles are still loadable; this is advisory.
+func IsKnownProfile(profile string) bool {
+	return validProfiles[profile]
+}
+
+// resolveProfile picks the effective profile name from (in order):
+//  1. opts.Profile
+//  2. <EnvPrefix>_PROFILE env var (e.g. APP_PROFILE)
+//  3. APP_PROFILE (always checked as a fallback so a single global var works
+//     across services even when they use different EnvPrefix values)
+//  4. DefaultProfile
+func resolveProfile(opts Options) string {
+	if opts.Profile != "" {
+		return opts.Profile
+	}
+	if opts.EnvPrefix != "" {
+		if v := os.Getenv(opts.EnvPrefix + "_PROFILE"); v != "" {
+			return v
+		}
+	}
+	if v := os.Getenv("APP_PROFILE"); v != "" {
+		return v
+	}
+	return DefaultProfile
+}
+
+// profileOverrideFile returns "config.<profile>.yaml" alongside baseFile, or
+// "" when baseFile is empty.
+func profileOverrideFile(baseFile, profile string) string {
+	if baseFile == "" || profile == "" {
+		return ""
+	}
+	dir, name := filepath.Split(baseFile)
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	if ext == "" {
+		ext = ".yaml"
+	}
+	return filepath.Join(dir, stem+"."+profile+ext)
 }
 
 // Load populates the target struct from environment variables, config files,
@@ -78,12 +146,18 @@ func Load(target any, opts Options) error {
 		_ = v.BindEnv(b[0], b[1])
 	}
 
+	// Resolve the effective profile (dev by default). Profile overrides are
+	// layered on top of the base file so nested keys merge naturally.
+	profile := resolveProfile(opts)
+
 	// Read config file if specified.
+	baseFileUsed := ""
 	if opts.ConfigFile != "" {
 		v.SetConfigFile(opts.ConfigFile)
 		if err := v.ReadInConfig(); err != nil {
 			return fmt.Errorf("reading config file: %w", err)
 		}
+		baseFileUsed = opts.ConfigFile
 	} else if len(opts.ConfigPaths) > 0 {
 		v.SetConfigName("config")
 		v.SetConfigType("yaml")
@@ -92,6 +166,24 @@ func Load(target any, opts Options) error {
 		}
 		// Config file is optional when paths are specified.
 		_ = v.ReadInConfig()
+		baseFileUsed = v.ConfigFileUsed()
+	}
+
+	// Layer the profile-specific override file on top of the base. MergeInConfig
+	// preserves any keys not defined in the override, so partial profile files
+	// are supported. A missing override file is not an error.
+	if baseFileUsed != "" && profile != "" {
+		overridePath := profileOverrideFile(baseFileUsed, profile)
+		if overridePath != "" {
+			if _, statErr := os.Stat(overridePath); statErr == nil {
+				v.SetConfigFile(overridePath)
+				if err := v.MergeInConfig(); err != nil {
+					return fmt.Errorf("merging profile %q from %s: %w", profile, overridePath, err)
+				}
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				return fmt.Errorf("stat profile file %s: %w", overridePath, statErr)
+			}
+		}
 	}
 
 	// Unmarshal into the target struct.

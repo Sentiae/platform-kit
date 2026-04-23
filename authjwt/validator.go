@@ -57,7 +57,12 @@ type Claims struct {
 	OrganizationID uuid.UUID
 	Email          string
 	Scopes         []string
-	Raw            jwt.MapClaims
+	// PlatformAdmin is populated from the "platform_admin" boolean
+	// claim when identity-service issues tokens for users holding
+	// the platform-admin role. §18.2 — downstream services use this
+	// to gate cross-tenant endpoints.
+	PlatformAdmin bool
+	Raw           jwt.MapClaims
 }
 
 // Validator verifies JWTs against a remote JWKS.
@@ -141,6 +146,9 @@ func (v *Validator) Validate(ctx context.Context, token string) (*Claims, error)
 				out.Scopes = append(out.Scopes, str)
 			}
 		}
+	}
+	if v, ok := claims["platform_admin"].(bool); ok {
+		out.PlatformAdmin = v
 	}
 	return out, nil
 }

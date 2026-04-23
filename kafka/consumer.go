@@ -151,7 +151,16 @@ func (c *KafkaConsumer) Subscribe(eventType string, handler EventHandler) {
 }
 
 // Start begins consuming messages. It blocks until ctx is cancelled.
+//
+// Errors from the underlying segmentio Reader (rebalance failures,
+// coordinator disconnects, group session timeouts) are routed through
+// cfg.Logger so operational issues become visible in logs; previously
+// those errors were silent, which allowed a consumer to appear "started"
+// indefinitely while actually not consuming anything.
 func (c *KafkaConsumer) Start(ctx context.Context) error {
+	readerLogger := kafkaLoggerFromSlog(c.cfg.Logger, false)
+	readerErrLogger := kafkaLoggerFromSlog(c.cfg.Logger, true)
+
 	c.mu.Lock()
 	var wg sync.WaitGroup
 	for _, topic := range c.cfg.Topics {
@@ -163,6 +172,13 @@ func (c *KafkaConsumer) Start(ctx context.Context) error {
 			MaxBytes:    c.cfg.MaxBytes,
 			MaxWait:     c.cfg.MaxWait,
 			StartOffset: c.cfg.StartOffset,
+			// Logger surfaces INFO-level reader events (joins, rebalances,
+			// offset commits). ErrorLogger surfaces fetch/heartbeat/group
+			// errors that would otherwise be swallowed — the common
+			// failure mode here is a consumer evicted from the group
+			// during a rebalance with nobody logging it.
+			Logger:      readerLogger,
+			ErrorLogger: readerErrLogger,
 		})
 		c.readers = append(c.readers, reader)
 
@@ -176,6 +192,23 @@ func (c *KafkaConsumer) Start(ctx context.Context) error {
 
 	wg.Wait()
 	return nil
+}
+
+// kafkaLoggerFromSlog adapts a slog.Logger to segmentio's kafka.Logger
+// interface. isError controls the log level on the slog side so ErrorLogger
+// messages don't get mixed with routine INFO traffic.
+func kafkaLoggerFromSlog(sl *slog.Logger, isError bool) kafka.LoggerFunc {
+	if sl == nil {
+		sl = slog.Default()
+	}
+	return func(msg string, args ...any) {
+		formatted := fmt.Sprintf(msg, args...)
+		if isError {
+			sl.Error("kafka reader", "message", formatted)
+		} else {
+			sl.Debug("kafka reader", "message", formatted)
+		}
+	}
 }
 
 func (c *KafkaConsumer) consumeTopic(ctx context.Context, reader *kafka.Reader, topic string) {

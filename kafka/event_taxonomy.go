@@ -88,6 +88,12 @@ const (
 	EventWorkFeatureMetricsUpdated    = "work.feature.metrics_updated"
 	EventWorkFeatureCodeHealthUpdated = "work.feature.code_health_updated"
 	EventWorkFeatureCostUpdated       = "work.feature.cost_updated"
+
+	// Tier-3 autonomous-loop signaling (§19.3). work-service emits
+	// decomposition_triggered after sending a decompose_spec request to
+	// foundry-service so auditing, Pulse, and cooldowns have a single
+	// per-attempt record.
+	EventWorkSpecDecompositionTriggered = "work.spec.decomposition_triggered"
 )
 
 // ---------- Analytics domain ---------------------------------------------
@@ -191,6 +197,14 @@ const (
 	EventOpsDeployPromoted       = "ops.deploy.promoted"
 	EventOpsDeploymentFailed     = "ops.deployment.failed"
 
+	// Tier-3 autonomous-loop signalling (§19.3). Emitted by the
+	// quality-gate evaluator consumer when every required delivery_gate
+	// attached to a deployment clears after a runtime.test.completed
+	// event. Distinct from ops.deploy.requested (which is the legacy
+	// bridge event) so the canonical CloudEvent names used by the §19.3
+	// loop are unambiguously ops.deployment.*.
+	EventOpsDeploymentRequested = "ops.deployment.requested"
+
 	// ---- additional ops.alert.* events
 	EventOpsAlertFired    = "ops.alert.fired"
 	EventOpsAlertSilenced = "ops.alert.silenced"
@@ -265,6 +279,8 @@ const (
 	EventCanvasNodeCertified = "canvas.node.certified"
 	EventCanvasNodeGenerated = "canvas.node.generated"
 	EventCanvasNodePublished = "canvas.node.published"
+	EventCanvasNodeLinked    = "canvas.node.linked"
+	EventCanvasNodeUnlinked  = "canvas.node.unlinked"
 
 	EventCanvasEdgeCreated = "canvas.edge.created"
 	EventCanvasEdgeDeleted = "canvas.edge.deleted"
@@ -334,6 +350,29 @@ const (
 	EventCanvasEdgeCommentUpdated  = "canvas.edge_comment.updated"
 	EventCanvasEdgeCommentDeleted  = "canvas.edge_comment.deleted"
 	EventCanvasEdgeCommentResolved = "canvas.edge_comment.resolved"
+)
+
+// ---------- Comments domain (cross-cutting "Comments Everywhere") --------
+//
+// These events carry the polymorphic Comment envelope that the BFF's
+// CommentPubSub dispatches to GraphQL Subscription clients. Producers today
+// are ops-service (incident/deployment), work-service (work_item/feature/
+// spec), and canvas-service (canvas_node). Topic name: "sentiae.comments.events".
+
+const (
+	EventCommentCreated = "comments.events.created"
+	EventCommentUpdated = "comments.events.updated"
+	EventCommentDeleted = "comments.events.deleted"
+)
+
+// ---------- Presence domain (cross-cutting co-presence) -----------------
+//
+// Published by bff-service on every BroadcastPresence mutation so sibling
+// BFF replicas can fan the fresh snapshot out to their own GraphQL
+// subscribers. Topic name: "sentiae.presence.events".
+
+const (
+	EventPresenceUpdated = "presence.events.updated"
 )
 
 // ---------- Git domain (legacy "sentiae.git.*" event types) ---------------
@@ -481,6 +520,14 @@ const (
 
 	// Agent memory freshness rescoring (by background worker).
 	EventFoundryMemoryStalenessRescored = "foundry.memory.staleness_rescored"
+
+	// Tier-3 autonomous-loop signalling (§19.3). These close the gap
+	// between work/canvas and the foundry agents that drive decomposition
+	// and code generation so the loops are event-driven end-to-end.
+	EventFoundryDecomposeSpecRequested = "foundry.decompose_spec.requested"
+	EventFoundryCodeGenStarted         = "foundry.code_gen.started"
+	EventFoundryCodeGenCompleted       = "foundry.code_gen.completed"
+	EventFoundryCodeGenFailed          = "foundry.code_gen.failed"
 )
 
 // ---------- Saga domain --------------------------------------------------
@@ -568,10 +615,11 @@ const (
 // ---------- Identity domain ---------------------------------------------
 
 const (
-	EventIdentityUserRegistered = "identity.user.registered"
-	EventIdentityUserUpdated    = "identity.user.updated"
-	EventIdentityUserDeleted    = "identity.user.deleted"
-	EventIdentityUserLoggedIn   = "identity.user.logged_in"
+	EventIdentityUserRegistered      = "identity.user.registered"
+	EventIdentityUserUpdated         = "identity.user.updated"
+	EventIdentityUserDeleted         = "identity.user.deleted"
+	EventIdentityUserLoggedIn        = "identity.user.logged_in"
+	EventIdentityUserPresenceChanged = "identity.user.presence_changed"
 
 	EventIdentityOrganizationCreated = "identity.organization.created"
 	EventIdentityOrganizationUpdated = "identity.organization.updated"
@@ -656,7 +704,7 @@ func dataSchema(description string, requiredMetadata []string, metadataProps str
 var registeredEvents = []RegisteredEvent{
 	// Work ---------------------------------------------------------------
 	{EventWorkSpecCreated, "work", "A product spec was created", "work-service",
-		dataSchema("work.spec.created", []string{"title", "status"}, `"title":{"type":"string"},"status":{"type":"string"},"priority":{"type":"string"},"project_id":{"type":"string"}`)},
+		dataSchema("work.spec.created", []string{"title", "status"}, `"title":{"type":"string"},"status":{"type":"string"},"priority":{"type":"string"},"project_id":{"type":"string"},"autonomous":{"type":"boolean"},"source":{"type":"string"}`)},
 	{EventWorkSpecUpdated, "work", "A product spec was updated", "work-service",
 		dataSchema("work.spec.updated", nil, `"changes":{"type":"object"}`)},
 	{EventWorkSpecDeleted, "work", "A product spec was deleted", "work-service",
@@ -772,13 +820,13 @@ var registeredEvents = []RegisteredEvent{
 
 	// Ops ----------------------------------------------------------------
 	{EventOpsDeploymentStarted, "ops", "A deployment was started", "ops-service",
-		dataSchema("ops.deployment.started", []string{"service", "environment"}, `"service":{"type":"string"},"environment":{"type":"string"},"version":{"type":"string"}`)},
+		dataSchema("ops.deployment.started", nil, `"service":{"type":"string"},"service_id":{"type":"string"},"environment":{"type":"string"},"environment_id":{"type":"string"},"deployment_id":{"type":"string"},"version":{"type":"string"},"commit_sha":{"type":"string"},"status":{"type":"string"}`)},
 	{EventOpsDeploymentCompleted, "ops", "A deployment completed", "ops-service",
-		dataSchema("ops.deployment.completed", []string{"service", "environment", "status"}, `"service":{"type":"string"},"environment":{"type":"string"},"status":{"type":"string"},"duration_ms":{"type":"integer"}`)},
+		dataSchema("ops.deployment.completed", []string{"status"}, `"status":{"type":"string"},"environment_id":{"type":"string"},"environment":{"type":"string"},"service":{"type":"string"},"service_id":{"type":"string"},"deployment_id":{"type":"string"},"duration_ms":{"type":"integer"},"commit_sha":{"type":"string"},"version":{"type":"string"},"target_id":{"type":"string"},"target_type":{"type":"string"}`)},
 	{EventOpsDeploymentPromoted, "ops", "A deployment was promoted", "ops-service",
 		dataSchema("ops.deployment.promoted", []string{"service", "from_env", "to_env"}, `"service":{"type":"string"},"from_env":{"type":"string"},"to_env":{"type":"string"}`)},
 	{EventOpsDeploymentRolledBack, "ops", "A deployment was rolled back", "ops-service",
-		dataSchema("ops.deployment.rolled_back", []string{"service"}, `"service":{"type":"string"},"reason":{"type":"string"}`)},
+		dataSchema("ops.deployment.rolled_back", nil, `"service":{"type":"string"},"service_id":{"type":"string"},"environment":{"type":"string"},"environment_id":{"type":"string"},"deployment_id":{"type":"string"},"reason":{"type":"string"},"status":{"type":"string"}`)},
 	{EventOpsDeploymentCorrelated, "ops", "Deployment correlated to metric change", "ops-service",
 		dataSchema("ops.deployment.correlated", []string{"deployment_id"}, `"deployment_id":{"type":"string"},"metric":{"type":"string"},"impact":{"type":"string"}`)},
 
@@ -865,6 +913,10 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("canvas.node.generated", []string{"canvas_id"}, `"canvas_id":{"type":"string"},"model":{"type":"string"}`)},
 	{EventCanvasNodePublished, "canvas", "A canvas node was published to marketplace", "canvas-service",
 		dataSchema("canvas.node.published", []string{"marketplace_id"}, `"marketplace_id":{"type":"string"},"version":{"type":"string"}`)},
+	{EventCanvasNodeLinked, "canvas", "A canvas node was linked to a spec or feature", "canvas-service",
+		dataSchema("canvas.node.linked", []string{"node_id"}, `"node_id":{"type":"string"},"spec_id":{"type":"string"},"feature_id":{"type":"string"},"link_type":{"type":"string"}`)},
+	{EventCanvasNodeUnlinked, "canvas", "A canvas node was unlinked from a spec or feature", "canvas-service",
+		dataSchema("canvas.node.unlinked", []string{"node_id"}, `"node_id":{"type":"string"},"spec_id":{"type":"string"},"feature_id":{"type":"string"}`)},
 
 	{EventCanvasEdgeCreated, "canvas", "A canvas edge was created", "canvas-service",
 		dataSchema("canvas.edge.created", []string{"source", "target"}, `"canvas_id":{"type":"string"},"source":{"type":"string"},"target":{"type":"string"}`)},
@@ -973,6 +1025,18 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("canvas.edge_comment.deleted", []string{"comment_id"}, `"canvas_id":{"type":"string"},"edge_id":{"type":"string"},"comment_id":{"type":"string"}`)},
 	{EventCanvasEdgeCommentResolved, "canvas", "An edge comment was resolved", "canvas-service",
 		dataSchema("canvas.edge_comment.resolved", []string{"comment_id"}, `"canvas_id":{"type":"string"},"edge_id":{"type":"string"},"comment_id":{"type":"string"},"resolved":{"type":"boolean"}`)},
+
+	// Comments (cross-cutting "Comments Everywhere" surface) -------------
+	{EventCommentCreated, "comments", "A polymorphic comment was created", "multi",
+		dataSchema("comments.events.created", nil, `"id":{"type":"string"},"resourceType":{"type":"string"},"resourceId":{"type":"string"},"authorId":{"type":"string"},"body":{"type":"string"},"threadId":{"type":"string"},"metadata":{"type":"object"}`)},
+	{EventCommentUpdated, "comments", "A polymorphic comment was updated", "multi",
+		dataSchema("comments.events.updated", nil, `"id":{"type":"string"},"resourceType":{"type":"string"},"resourceId":{"type":"string"},"authorId":{"type":"string"},"body":{"type":"string"}`)},
+	{EventCommentDeleted, "comments", "A polymorphic comment was deleted", "multi",
+		dataSchema("comments.events.deleted", nil, `"id":{"type":"string"},"resourceType":{"type":"string"},"resourceId":{"type":"string"}`)},
+
+	// Presence (cross-cutting co-presence surface) ----------------------
+	{EventPresenceUpdated, "presence", "A resource presence snapshot was updated", "bff-service",
+		dataSchema("presence.events.updated", []string{"resourceType", "resourceId"}, `"resourceType":{"type":"string"},"resourceId":{"type":"string"},"status":{"type":"string"},"userId":{"type":"string"},"activeUsers":{"type":"array"},"cursorPosition":{"type":"object"},"lastUpdated":{"type":"string"}`)},
 
 	// Data ---------------------------------------------------------------
 	{EventDataQueryExecuted, "data", "A data query was executed", "data-service",
@@ -1102,6 +1166,20 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("foundry.memory.staleness_rescored", []string{"total"},
 			`"total":{"type":"integer"},"stale":{"type":"integer"},"fresh":{"type":"integer"}`)},
 
+	// Tier-3 autonomous-loop signalling ------------------------------------
+	{EventFoundryDecomposeSpecRequested, "foundry", "A spec decomposition run was requested", "work-service",
+		dataSchema("foundry.decompose_spec.requested", []string{"spec_id"},
+			`"spec_id":{"type":"string"},"title":{"type":"string"},"description":{"type":"string"},"organization_id":{"type":"string"},"attempt":{"type":"integer"},"source_kind":{"type":"string"}`)},
+	{EventFoundryCodeGenStarted, "foundry", "Code generation for a canvas node started", "foundry-service",
+		dataSchema("foundry.code_gen.started", []string{"node_id"},
+			`"node_id":{"type":"string"},"canvas_id":{"type":"string"},"spec_id":{"type":"string"},"organization_id":{"type":"string"}`)},
+	{EventFoundryCodeGenCompleted, "foundry", "Code generation for a canvas node completed", "foundry-service",
+		dataSchema("foundry.code_gen.completed", []string{"node_id"},
+			`"node_id":{"type":"string"},"canvas_id":{"type":"string"},"spec_id":{"type":"string"},"code":{"type":"string"},"duration_ms":{"type":"integer"}`)},
+	{EventFoundryCodeGenFailed, "foundry", "Code generation for a canvas node failed", "foundry-service",
+		dataSchema("foundry.code_gen.failed", []string{"node_id", "error"},
+			`"node_id":{"type":"string"},"canvas_id":{"type":"string"},"spec_id":{"type":"string"},"error":{"type":"string"}`)},
+
 	// Saga lifecycle events (Tier-2 long-running orchestrations) ------------
 	{EventSagaSelfHealingStarted, "saga", "Self-healing saga started from an ops.alert.fired event", "foundry-service",
 		dataSchema("saga.self_healing.started", []string{"saga_id", "alert_id"},
@@ -1208,6 +1286,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("identity.user.deleted", nil, "")},
 	{EventIdentityUserLoggedIn, "identity", "A user logged in", "identity-service",
 		dataSchema("identity.user.logged_in", nil, `"ip":{"type":"string"},"user_agent":{"type":"string"}`)},
+	{EventIdentityUserPresenceChanged, "identity", "A user's presence state changed (online/away/offline)", "identity-service",
+		dataSchema("identity.user.presence_changed", []string{"user_id", "state"}, `"user_id":{"type":"string"},"state":{"type":"string","enum":["online","away","offline"]},"at":{"type":"string"}`)},
 
 	{EventIdentityOrganizationCreated, "identity", "An organization was created", "identity-service",
 		dataSchema("identity.organization.created", []string{"name"}, `"name":{"type":"string"},"slug":{"type":"string"}`)},
@@ -1278,6 +1358,9 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("ops.deploy.promoted", nil, `"deployment_id":{"type":"string"},"from_env":{"type":"string"},"to_env":{"type":"string"}`)},
 	{EventOpsDeploymentFailed, "ops", "A deployment failed (deployment.* form)", "ops-service",
 		dataSchema("ops.deployment.failed", nil, `"deployment_id":{"type":"string"},"environment":{"type":"string"},"error":{"type":"string"}`)},
+	{EventOpsDeploymentRequested, "ops", "Quality-gate evaluator requested a deployment after tests passed", "ops-service",
+		dataSchema("ops.deployment.requested", []string{"deployment_id"},
+			`"deployment_id":{"type":"string"},"test_run_id":{"type":"string"},"artifact":{"type":"string"},"session_id":{"type":"string"},"spec_id":{"type":"string"},"trigger":{"type":"string"},"passing_gates":{"type":"integer"}`)},
 
 	{EventOpsAlertFired, "ops", "An alert was fired (canonical name; ops.alert.triggered is an alias)", "ops-service",
 		dataSchema("ops.alert.fired", nil, `"severity":{"type":"string"},"service":{"type":"string"},"summary":{"type":"string"}`)},
@@ -1426,6 +1509,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("work.spec.child_created", []string{"parent_spec_id", "child_spec_id"}, `"parent_spec_id":{"type":"string"},"child_spec_id":{"type":"string"},"title":{"type":"string"},"priority":{"type":"string"}`)},
 	{EventWorkSpecDecomposed, "work", "A spec was decomposed into child specs", "work-service",
 		dataSchema("work.spec.decomposed", []string{"parent_spec_id", "child_count"}, `"parent_spec_id":{"type":"string"},"child_count":{"type":"integer"},"child_spec_ids":{"type":"array","items":{"type":"string"}}`)},
+	{EventWorkSpecDecompositionTriggered, "work", "A decomposition attempt was dispatched to foundry", "work-service",
+		dataSchema("work.spec.decomposition_triggered", []string{"spec_id"}, `"spec_id":{"type":"string"},"attempt":{"type":"integer"},"source_kind":{"type":"string"},"dispatch_target":{"type":"string"}`)},
 
 	// ---- Feature metrics / rollups -----------------------------------
 	{EventWorkFeatureMetricsUpdated, "work", "Feature usage metrics (DAU/MAU) were updated", "work-service",

@@ -137,6 +137,56 @@ func TestConsumer_Close(t *testing.T) {
 	}
 }
 
+// TestConsumer_SchemaValidation_RoutesToDLQ makes sure payloads that
+// don't match the registered taxonomy land in the DLQ instead of the
+// handler. Exercises the validateMessagePayload hook added to
+// consumeTopic for §A6.
+func TestConsumer_SchemaValidation_RoutesToDLQ(t *testing.T) {
+	// Register a known event with a schema that requires `user_id`.
+	if err := RegisterExtensionEvent(RegisteredEvent{
+		Type:        "test.schema.required",
+		Domain:      "test",
+		Description: "test event for schema validation",
+		Owner:       "platform-kit",
+		Schema: `{
+			"type": "object",
+			"required": ["user_id"],
+			"properties": {
+				"user_id": {"type": "string"}
+			}
+		}`,
+	}); err != nil {
+		t.Fatalf("register schema: %v", err)
+	}
+
+	// Payload deliberately omits the required field.
+	bad := map[string]any{"not_user_id": "oops"}
+
+	c := &KafkaConsumer{
+		cfg: ConsumerConfig{
+			Logger: noopLogger(),
+		},
+		handlers: map[string]EventHandler{
+			"test.schema.required": func(ctx context.Context, event CloudEvent) error { return nil },
+		},
+	}
+
+	// validateMessagePayload is the unit under test.
+	raw, _ := json.Marshal(bad)
+	event := CloudEvent{Type: "test.schema.required", Data: raw}
+	if err := c.validateMessagePayload(event); err == nil {
+		t.Fatal("expected validation failure for missing user_id, got nil")
+	}
+
+	// Good payload passes.
+	good := map[string]any{"user_id": "u-1"}
+	raw, _ = json.Marshal(good)
+	event = CloudEvent{Type: "test.schema.required", Data: raw}
+	if err := c.validateMessagePayload(event); err != nil {
+		t.Fatalf("expected valid payload to pass, got %v", err)
+	}
+}
+
 func TestDeadLetterFunc(t *testing.T) {
 	var mu sync.Mutex
 	var captured *FailedMessage
