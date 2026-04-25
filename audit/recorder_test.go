@@ -28,6 +28,7 @@ func (p *fakePublisher) Publish(_ context.Context, eventType string, data kafka.
 }
 func (p *fakePublisher) PublishBatch(_ context.Context, _ []kafka.Event) error { return nil }
 func (p *fakePublisher) Close() error                                          { return nil }
+func (p *fakePublisher) EnsureTopics(_ context.Context) error                  { return nil }
 
 func TestRecorder_ValidationErrors(t *testing.T) {
 	t.Parallel()

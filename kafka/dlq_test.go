@@ -43,6 +43,7 @@ func (p *fakePublisher) PublishBatch(ctx context.Context, events []Event) error 
 }
 
 func (p *fakePublisher) Close() error { return p.closeErr }
+func (p *fakePublisher) EnsureTopics(_ context.Context) error { return nil }
 
 func TestDLQProducer_DefaultSuffix(t *testing.T) {
 	p := NewDLQProducer(nil, "")

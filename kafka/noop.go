@@ -23,6 +23,12 @@ func (p *NoopPublisher) PublishBatch(_ context.Context, _ []Event) error {
 	return nil
 }
 
+// EnsureTopics does nothing and returns nil. The no-op publisher has no
+// broker to talk to.
+func (p *NoopPublisher) EnsureTopics(_ context.Context) error {
+	return nil
+}
+
 // Close does nothing and returns nil.
 func (p *NoopPublisher) Close() error {
 	return nil

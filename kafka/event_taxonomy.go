@@ -365,6 +365,37 @@ const (
 	EventCommentDeleted = "comments.events.deleted"
 )
 
+// ---------- Foundry flow domain (foundry-service flow tracker) ----------
+//
+// foundry-service publishes per-flow lifecycle events as foundry.flow.*
+// (topic: sentiae.foundry.flow) and per-step events as flow.step.*
+// (topic: sentiae.flow.step — note that foundry's messaging adapter
+// strips a leading "sentiae." from event types before publish, so the
+// wire-form event types listed below intentionally drop that prefix).
+// Identity-service's flow tracker consumer subscribes to both topics
+// to maintain the user_active_flows projection.
+
+const (
+	EventFoundryFlowStarted   = "foundry.flow.started"
+	EventFoundryFlowCompleted = "foundry.flow.completed"
+	EventFoundryFlowFailed    = "foundry.flow.failed"
+	EventFoundryFlowCancelled = "foundry.flow.cancelled"
+	EventFoundryFlowPaused    = "foundry.flow.paused"
+	EventFoundryFlowResumed   = "foundry.flow.resumed"
+
+	// Step events publish under both legacy underscore-form
+	// (foundry.flow.step_*) and modern dot-form (flow.step.*) — the
+	// former routes to topic sentiae.foundry.flow alongside flow events,
+	// the latter routes to its own topic sentiae.flow.step.
+	EventFoundryFlowStepStartedLegacy   = "foundry.flow.step_started"
+	EventFoundryFlowStepCompletedLegacy = "foundry.flow.step_completed"
+	EventFoundryFlowStepFailedLegacy    = "foundry.flow.step_failed"
+
+	EventFlowStepStarted   = "flow.step.started"
+	EventFlowStepCompleted = "flow.step.completed"
+	EventFlowStepFailed    = "flow.step.failed"
+)
+
 // ---------- Chat domain (conversation-service) --------------------------
 //
 // conversation-service publishes per-message and per-channel events that
@@ -1059,6 +1090,35 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("comments.events.updated", nil, `"id":{"type":"string"},"resourceType":{"type":"string"},"resourceId":{"type":"string"},"authorId":{"type":"string"},"body":{"type":"string"}`)},
 	{EventCommentDeleted, "comments", "A polymorphic comment was deleted", "multi",
 		dataSchema("comments.events.deleted", nil, `"id":{"type":"string"},"resourceType":{"type":"string"},"resourceId":{"type":"string"}`)},
+
+	// Foundry flow (per-flow + per-step lifecycle events) ----------------
+	{EventFoundryFlowStarted, "foundry", "A foundry flow started", "foundry-service",
+		dataSchema("foundry.flow.started", nil, `"flow_id":{"type":"string"},"organization_id":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"},"kind":{"type":"string"},"status":{"type":"string"},"intent":{"type":"string"},"trigger_type":{"type":"string"}`)},
+	{EventFoundryFlowCompleted, "foundry", "A foundry flow completed successfully", "foundry-service",
+		dataSchema("foundry.flow.completed", nil, `"flow_id":{"type":"string"},"organization_id":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"},"kind":{"type":"string"}`)},
+	{EventFoundryFlowFailed, "foundry", "A foundry flow failed", "foundry-service",
+		dataSchema("foundry.flow.failed", nil, `"flow_id":{"type":"string"},"organization_id":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"},"kind":{"type":"string"},"error":{"type":"string"}`)},
+	{EventFoundryFlowCancelled, "foundry", "A foundry flow was cancelled", "foundry-service",
+		dataSchema("foundry.flow.cancelled", nil, `"flow_id":{"type":"string"},"organization_id":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"},"kind":{"type":"string"}`)},
+	{EventFoundryFlowPaused, "foundry", "A foundry flow was paused (gate)", "foundry-service",
+		dataSchema("foundry.flow.paused", nil, `"flow_id":{"type":"string"},"organization_id":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},
+	{EventFoundryFlowResumed, "foundry", "A foundry flow resumed from pause", "foundry-service",
+		dataSchema("foundry.flow.resumed", nil, `"flow_id":{"type":"string"},"organization_id":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},
+
+	{EventFoundryFlowStepStartedLegacy, "foundry", "A flow step started (legacy underscore form)", "foundry-service",
+		dataSchema("foundry.flow.step_started", nil, `"flow_id":{"type":"string"},"step_name":{"type":"string"},"service":{"type":"string"},"action":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},
+	{EventFoundryFlowStepCompletedLegacy, "foundry", "A flow step completed (legacy underscore form)", "foundry-service",
+		dataSchema("foundry.flow.step_completed", nil, `"flow_id":{"type":"string"},"step_name":{"type":"string"},"service":{"type":"string"},"action":{"type":"string"},"duration_ms":{"type":"integer"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},
+	{EventFoundryFlowStepFailedLegacy, "foundry", "A flow step failed (legacy underscore form)", "foundry-service",
+		dataSchema("foundry.flow.step_failed", nil, `"flow_id":{"type":"string"},"step_name":{"type":"string"},"service":{"type":"string"},"action":{"type":"string"},"error":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},
+
+	// Modern dot-form step events route to topic sentiae.flow.step.
+	{EventFlowStepStarted, "flow", "A flow step started", "foundry-service",
+		dataSchema("flow.step.started", nil, `"flow_id":{"type":"string"},"step_name":{"type":"string"},"service":{"type":"string"},"action":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},
+	{EventFlowStepCompleted, "flow", "A flow step completed", "foundry-service",
+		dataSchema("flow.step.completed", nil, `"flow_id":{"type":"string"},"step_name":{"type":"string"},"service":{"type":"string"},"action":{"type":"string"},"duration_ms":{"type":"integer"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},
+	{EventFlowStepFailed, "flow", "A flow step failed", "foundry-service",
+		dataSchema("flow.step.failed", nil, `"flow_id":{"type":"string"},"step_name":{"type":"string"},"service":{"type":"string"},"action":{"type":"string"},"error":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},
 
 	// Chat (conversation-service per-message + per-channel events) -------
 	{EventChatMessageCreated, "chat", "A chat message was created", "conversation-service",

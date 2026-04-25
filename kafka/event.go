@@ -63,6 +63,10 @@ type Event struct {
 type Publisher interface {
 	Publish(ctx context.Context, eventType string, data EventData) error
 	PublishBatch(ctx context.Context, events []Event) error
+	// EnsureTopics pre-creates the topic set this publisher knows about
+	// (typically the registered event taxonomy). Implementations must be
+	// idempotent: a topic that already exists is not an error.
+	EnsureTopics(ctx context.Context) error
 	Close() error
 }
 
