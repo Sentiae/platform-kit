@@ -365,6 +365,28 @@ const (
 	EventCommentDeleted = "comments.events.deleted"
 )
 
+// ---------- Chat domain (conversation-service) --------------------------
+//
+// conversation-service publishes per-message and per-channel events that
+// downstream consumers (foundry BuildPlanIgnitor, chat fan-out, BFF
+// subscriptions) react to. Topic name: "sentiae.chat.events".
+
+const (
+	EventChatMessageCreated  = "chat.message.created"
+	EventChatMessageUpdated  = "chat.message.updated"
+	EventChatMessageDeleted  = "chat.message.deleted"
+	EventChatChannelCreated  = "chat.channel.created"
+	EventChatChannelUpdated  = "chat.channel.updated"
+	EventChatChannelDeleted  = "chat.channel.deleted"
+	EventChatReactionAdded   = "chat.reaction.added"
+	EventChatReactionRemoved = "chat.reaction.removed"
+	EventChatTypingStarted   = "chat.typing.started"
+	EventChatTypingStopped   = "chat.typing.stopped"
+	EventChatPresenceUpdated = "chat.presence.updated"
+	EventChatVoiceState      = "chat.voice.state.updated"
+	EventChatEveEvent        = "chat.eve.event"
+)
+
 // ---------- Presence domain (cross-cutting co-presence) -----------------
 //
 // Published by bff-service on every BroadcastPresence mutation so sibling
@@ -619,6 +641,10 @@ const (
 	EventIdentityUserUpdated         = "identity.user.updated"
 	EventIdentityUserDeleted         = "identity.user.deleted"
 	EventIdentityUserLoggedIn        = "identity.user.logged_in"
+	// EventIdentityUserFirstLogin fires exactly once per user, on the
+	// first successful login. Consumed by foundry's reactive rule engine
+	// to dispatch Eve's "What would you like to build today?" welcome.
+	EventIdentityUserFirstLogin      = "identity.user.first_login"
 	EventIdentityUserPresenceChanged = "identity.user.presence_changed"
 
 	EventIdentityOrganizationCreated = "identity.organization.created"
@@ -1034,6 +1060,34 @@ var registeredEvents = []RegisteredEvent{
 	{EventCommentDeleted, "comments", "A polymorphic comment was deleted", "multi",
 		dataSchema("comments.events.deleted", nil, `"id":{"type":"string"},"resourceType":{"type":"string"},"resourceId":{"type":"string"}`)},
 
+	// Chat (conversation-service per-message + per-channel events) -------
+	{EventChatMessageCreated, "chat", "A chat message was created", "conversation-service",
+		dataSchema("chat.message.created", []string{"channel_id"}, `"id":{"type":"string"},"channel_id":{"type":"string"},"author_id":{"type":"string"},"actor_id":{"type":"string"},"content":{"type":"string"},"message_type":{"type":"string"},"context_type":{"type":"string"},"organization_id":{"type":"string"},"system_event_data":{"type":"object"}`)},
+	{EventChatMessageUpdated, "chat", "A chat message was updated", "conversation-service",
+		dataSchema("chat.message.updated", []string{"channel_id"}, `"id":{"type":"string"},"channel_id":{"type":"string"},"content":{"type":"string"}`)},
+	{EventChatMessageDeleted, "chat", "A chat message was deleted", "conversation-service",
+		dataSchema("chat.message.deleted", []string{"channel_id"}, `"id":{"type":"string"},"channel_id":{"type":"string"}`)},
+	{EventChatChannelCreated, "chat", "A chat channel was created", "conversation-service",
+		dataSchema("chat.channel.created", nil, `"id":{"type":"string"},"name":{"type":"string"},"context_type":{"type":"string"},"organization_id":{"type":"string"}`)},
+	{EventChatChannelUpdated, "chat", "A chat channel was updated", "conversation-service",
+		dataSchema("chat.channel.updated", nil, `"id":{"type":"string"}`)},
+	{EventChatChannelDeleted, "chat", "A chat channel was deleted", "conversation-service",
+		dataSchema("chat.channel.deleted", nil, `"id":{"type":"string"}`)},
+	{EventChatReactionAdded, "chat", "A reaction was added", "conversation-service",
+		dataSchema("chat.reaction.added", nil, `"message_id":{"type":"string"},"channel_id":{"type":"string"},"emoji":{"type":"string"},"user_id":{"type":"string"}`)},
+	{EventChatReactionRemoved, "chat", "A reaction was removed", "conversation-service",
+		dataSchema("chat.reaction.removed", nil, `"message_id":{"type":"string"},"channel_id":{"type":"string"},"emoji":{"type":"string"},"user_id":{"type":"string"}`)},
+	{EventChatTypingStarted, "chat", "Typing started", "conversation-service",
+		dataSchema("chat.typing.started", nil, `"channel_id":{"type":"string"},"user_id":{"type":"string"}`)},
+	{EventChatTypingStopped, "chat", "Typing stopped", "conversation-service",
+		dataSchema("chat.typing.stopped", nil, `"channel_id":{"type":"string"},"user_id":{"type":"string"}`)},
+	{EventChatPresenceUpdated, "chat", "Chat presence updated", "conversation-service",
+		dataSchema("chat.presence.updated", nil, `"user_id":{"type":"string"},"status":{"type":"string"}`)},
+	{EventChatVoiceState, "chat", "Voice state updated", "conversation-service",
+		dataSchema("chat.voice.state.updated", nil, `"channel_id":{"type":"string"},"user_id":{"type":"string"}`)},
+	{EventChatEveEvent, "chat", "Eve agent loop event", "conversation-service",
+		dataSchema("chat.eve.event", nil, `"channel_id":{"type":"string"}`)},
+
 	// Presence (cross-cutting co-presence surface) ----------------------
 	{EventPresenceUpdated, "presence", "A resource presence snapshot was updated", "bff-service",
 		dataSchema("presence.events.updated", []string{"resourceType", "resourceId"}, `"resourceType":{"type":"string"},"resourceId":{"type":"string"},"status":{"type":"string"},"userId":{"type":"string"},"activeUsers":{"type":"array"},"cursorPosition":{"type":"object"},"lastUpdated":{"type":"string"}`)},
@@ -1286,6 +1340,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("identity.user.deleted", nil, "")},
 	{EventIdentityUserLoggedIn, "identity", "A user logged in", "identity-service",
 		dataSchema("identity.user.logged_in", nil, `"ip":{"type":"string"},"user_agent":{"type":"string"}`)},
+	{EventIdentityUserFirstLogin, "identity", "A user logged in for the first time", "identity-service",
+		dataSchema("identity.user.first_login", []string{"user_id"}, `"user_id":{"type":"string"},"organization_id":{"type":"string"},"email":{"type":"string"},"full_name":{"type":"string"}`)},
 	{EventIdentityUserPresenceChanged, "identity", "A user's presence state changed (online/away/offline)", "identity-service",
 		dataSchema("identity.user.presence_changed", []string{"user_id", "state"}, `"user_id":{"type":"string"},"state":{"type":"string","enum":["online","away","offline"]},"at":{"type":"string"}`)},
 
