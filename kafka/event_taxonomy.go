@@ -33,6 +33,11 @@ const (
 	EventWorkSpecDeleted       = "work.spec.deleted"
 	EventWorkSpecStatusChanged = "work.spec.status_changed"
 
+	// Product lifecycle events (consumed by foundry's Eve Nudge Engine).
+	EventWorkProductCreated  = "work.product.created"
+	EventWorkProductUpdated  = "work.product.updated"
+	EventWorkProductArchived = "work.product.archived"
+
 	EventWorkFeatureCreated       = "work.feature.created"
 	EventWorkFeatureUpdated       = "work.feature.updated"
 	EventWorkFeatureDeleted       = "work.feature.deleted"
@@ -382,6 +387,16 @@ const (
 	EventFoundryFlowCancelled = "foundry.flow.cancelled"
 	EventFoundryFlowPaused    = "foundry.flow.paused"
 	EventFoundryFlowResumed   = "foundry.flow.resumed"
+
+	// Eve Nudge Engine lifecycle events. Each carries a Base envelope
+	// + transition-specific extras. Topic derives to sentiae.foundry.nudge.
+	EventFoundryNudgeDelivered  = "foundry.nudge.delivered"
+	EventFoundryNudgeSeen       = "foundry.nudge.seen"
+	EventFoundryNudgeActed      = "foundry.nudge.acted"
+	EventFoundryNudgeDismissed  = "foundry.nudge.dismissed"
+	EventFoundryNudgeSuppressed = "foundry.nudge.suppressed"
+	EventFoundryNudgeExpired    = "foundry.nudge.expired"
+	EventFoundryNudgeSuperseded = "foundry.nudge.superseded"
 
 	// Step events publish under both legacy underscore-form
 	// (foundry.flow.step_*) and modern dot-form (flow.step.*) — the
@@ -769,6 +784,13 @@ var registeredEvents = []RegisteredEvent{
 	{EventWorkSpecStatusChanged, "work", "A product spec's lifecycle status changed", "work-service",
 		dataSchema("work.spec.status_changed", []string{"status"}, `"title":{"type":"string"},"status":{"type":"string"},"completion_pct":{"type":"number"},"health_status":{"type":"string"}`)},
 
+	{EventWorkProductCreated, "work", "A product was created", "work-service",
+		dataSchema("work.product.created", []string{"name"}, `"product_id":{"type":"string"},"name":{"type":"string"},"slug":{"type":"string"},"is_default":{"type":"boolean"},"status":{"type":"string"}`)},
+	{EventWorkProductUpdated, "work", "A product was updated", "work-service",
+		dataSchema("work.product.updated", nil, `"changes":{"type":"object"}`)},
+	{EventWorkProductArchived, "work", "A product was archived", "work-service",
+		dataSchema("work.product.archived", nil, `"product_id":{"type":"string"}`)},
+
 	{EventWorkFeatureCreated, "work", "A feature was created", "work-service",
 		dataSchema("work.feature.created", []string{"name", "status"}, `"name":{"type":"string"},"status":{"type":"string"},"project_id":{"type":"string"}`)},
 	{EventWorkFeatureUpdated, "work", "A feature was updated", "work-service",
@@ -1104,6 +1126,26 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("foundry.flow.paused", nil, `"flow_id":{"type":"string"},"organization_id":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},
 	{EventFoundryFlowResumed, "foundry", "A foundry flow resumed from pause", "foundry-service",
 		dataSchema("foundry.flow.resumed", nil, `"flow_id":{"type":"string"},"organization_id":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},
+
+	// Eve Nudge Engine ----------------------------------------------------
+	// Each event carries a Base envelope (nudge_id, rule_id, user_id,
+	// org_id, group_key, priority, surface, transitioned_at) plus a
+	// per-transition extra (chip_id, reason, ...). Schema is permissive
+	// so we don't have to bump it on every payload tweak.
+	{EventFoundryNudgeDelivered, "foundry", "Nudge delivered to a user surface", "foundry-service",
+		dataSchema("foundry.nudge.delivered", nil, `"nudge_id":{"type":"string"},"rule_id":{"type":"string"},"user_id":{"type":"string"},"org_id":{"type":"string"},"product_id":{"type":"string"},"bundle_id":{"type":"string"},"group_key":{"type":"string"},"priority":{"type":"integer"},"surface":{"type":"string"},"transitioned_at":{"type":"string"},"conversation_id":{"type":"string"},"message_id":{"type":"string"},"expires_at":{"type":"string"}`)},
+	{EventFoundryNudgeSeen, "foundry", "Nudge marked seen by frontend", "foundry-service",
+		dataSchema("foundry.nudge.seen", nil, `"nudge_id":{"type":"string"},"rule_id":{"type":"string"},"user_id":{"type":"string"},"org_id":{"type":"string"},"product_id":{"type":"string"},"bundle_id":{"type":"string"},"group_key":{"type":"string"},"priority":{"type":"integer"},"surface":{"type":"string"},"transitioned_at":{"type":"string"}`)},
+	{EventFoundryNudgeActed, "foundry", "User clicked a nudge chip", "foundry-service",
+		dataSchema("foundry.nudge.acted", nil, `"nudge_id":{"type":"string"},"rule_id":{"type":"string"},"user_id":{"type":"string"},"org_id":{"type":"string"},"product_id":{"type":"string"},"bundle_id":{"type":"string"},"group_key":{"type":"string"},"priority":{"type":"integer"},"surface":{"type":"string"},"transitioned_at":{"type":"string"},"chip_id":{"type":"string"},"chip_params":{"type":"object"}`)},
+	{EventFoundryNudgeDismissed, "foundry", "User dismissed a nudge", "foundry-service",
+		dataSchema("foundry.nudge.dismissed", nil, `"nudge_id":{"type":"string"},"rule_id":{"type":"string"},"user_id":{"type":"string"},"org_id":{"type":"string"},"product_id":{"type":"string"},"bundle_id":{"type":"string"},"group_key":{"type":"string"},"priority":{"type":"integer"},"surface":{"type":"string"},"transitioned_at":{"type":"string"},"reason":{"type":"string"}`)},
+	{EventFoundryNudgeSuppressed, "foundry", "Nudge suppressed by gate", "foundry-service",
+		dataSchema("foundry.nudge.suppressed", nil, `"nudge_id":{"type":"string"},"rule_id":{"type":"string"},"user_id":{"type":"string"},"org_id":{"type":"string"},"product_id":{"type":"string"},"bundle_id":{"type":"string"},"group_key":{"type":"string"},"priority":{"type":"integer"},"surface":{"type":"string"},"transitioned_at":{"type":"string"},"reason":{"type":"string"}`)},
+	{EventFoundryNudgeExpired, "foundry", "Nudge expired before delivery/action", "foundry-service",
+		dataSchema("foundry.nudge.expired", nil, `"nudge_id":{"type":"string"},"rule_id":{"type":"string"},"user_id":{"type":"string"},"org_id":{"type":"string"},"product_id":{"type":"string"},"bundle_id":{"type":"string"},"group_key":{"type":"string"},"priority":{"type":"integer"},"surface":{"type":"string"},"transitioned_at":{"type":"string"}`)},
+	{EventFoundryNudgeSuperseded, "foundry", "Nudge superseded by bundle resolution", "foundry-service",
+		dataSchema("foundry.nudge.superseded", nil, `"nudge_id":{"type":"string"},"rule_id":{"type":"string"},"user_id":{"type":"string"},"org_id":{"type":"string"},"product_id":{"type":"string"},"bundle_id":{"type":"string"},"group_key":{"type":"string"},"priority":{"type":"integer"},"surface":{"type":"string"},"transitioned_at":{"type":"string"},"superseded_by_bundle_id":{"type":"string"}`)},
 
 	{EventFoundryFlowStepStartedLegacy, "foundry", "A flow step started (legacy underscore form)", "foundry-service",
 		dataSchema("foundry.flow.step_started", nil, `"flow_id":{"type":"string"},"step_name":{"type":"string"},"service":{"type":"string"},"action":{"type":"string"},"user_id":{"type":"string"},"channel_id":{"type":"string"}`)},

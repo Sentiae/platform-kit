@@ -27,6 +27,25 @@ type ConsumerConfig struct {
 	DeadLetterFunc DeadLetterFunc // Called when a message exhausts retries (optional)
 	Logger         *slog.Logger
 
+	// StartupJitter is the delay between successive reader startups. Staggering
+	// prevents all readers from joining the consumer group coordinator
+	// simultaneously (thundering herd). Default: 200ms.
+	StartupJitter time.Duration
+
+	// MaxConsecutiveErrors is the number of consecutive FetchMessage failures
+	// before the reader is closed and recreated with exponential backoff.
+	// Default: 5.
+	MaxConsecutiveErrors int
+
+	// ReconnectBaseBackoff is the initial wait before recreating a failed
+	// reader. Doubles on each successive failure up to ReconnectMaxBackoff.
+	// Default: 2s.
+	ReconnectBaseBackoff time.Duration
+
+	// ReconnectMaxBackoff caps exponential backoff for reader recreation.
+	// Default: 30s.
+	ReconnectMaxBackoff time.Duration
+
 	// DisableSchemaValidation skips the per-message taxonomy check. Default
 	// false. When enabled, every message's payload is validated against the
 	// registered schema before the handler is invoked; on failure the
@@ -66,6 +85,18 @@ func (c *ConsumerConfig) defaults() {
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
+	}
+	if c.StartupJitter == 0 {
+		c.StartupJitter = 200 * time.Millisecond
+	}
+	if c.MaxConsecutiveErrors == 0 {
+		c.MaxConsecutiveErrors = 5
+	}
+	if c.ReconnectBaseBackoff == 0 {
+		c.ReconnectBaseBackoff = 2 * time.Second
+	}
+	if c.ReconnectMaxBackoff == 0 {
+		c.ReconnectMaxBackoff = 30 * time.Second
 	}
 }
 
@@ -157,30 +188,29 @@ func (c *KafkaConsumer) Subscribe(eventType string, handler EventHandler) {
 // cfg.Logger so operational issues become visible in logs; previously
 // those errors were silent, which allowed a consumer to appear "started"
 // indefinitely while actually not consuming anything.
+//
+// Readers are started with a StartupJitter delay between each one to avoid
+// thundering-herd on the consumer group coordinator when many topics are
+// consumed simultaneously.
 func (c *KafkaConsumer) Start(ctx context.Context) error {
-	readerLogger := kafkaLoggerFromSlog(c.cfg.Logger, false)
-	readerErrLogger := kafkaLoggerFromSlog(c.cfg.Logger, true)
-
-	c.mu.Lock()
 	var wg sync.WaitGroup
-	for _, topic := range c.cfg.Topics {
-		reader := kafka.NewReader(kafka.ReaderConfig{
-			Brokers:     c.cfg.Brokers,
-			GroupID:     c.cfg.GroupID,
-			Topic:       topic,
-			MinBytes:    c.cfg.MinBytes,
-			MaxBytes:    c.cfg.MaxBytes,
-			MaxWait:     c.cfg.MaxWait,
-			StartOffset: c.cfg.StartOffset,
-			// Logger surfaces INFO-level reader events (joins, rebalances,
-			// offset commits). ErrorLogger surfaces fetch/heartbeat/group
-			// errors that would otherwise be swallowed — the common
-			// failure mode here is a consumer evicted from the group
-			// during a rebalance with nobody logging it.
-			Logger:      readerLogger,
-			ErrorLogger: readerErrLogger,
-		})
+	for i, topic := range c.cfg.Topics {
+		// Stagger reader joins: reader i waits i*jitter before starting.
+		// This spreads the group coordinator load across time instead of
+		// hitting it with all N readers simultaneously.
+		if i > 0 {
+			select {
+			case <-time.After(time.Duration(i) * c.cfg.StartupJitter):
+			case <-ctx.Done():
+				wg.Wait()
+				return ctx.Err()
+			}
+		}
+
+		reader := c.buildReader(topic)
+		c.mu.Lock()
 		c.readers = append(c.readers, reader)
+		c.mu.Unlock()
 
 		wg.Add(1)
 		go func(r *kafka.Reader, t string) {
@@ -188,10 +218,59 @@ func (c *KafkaConsumer) Start(ctx context.Context) error {
 			c.consumeTopic(ctx, r, t)
 		}(reader, topic)
 	}
-	c.mu.Unlock()
 
 	wg.Wait()
 	return nil
+}
+
+// buildReader creates a new kafka.Reader for the given topic using the
+// consumer's configured settings. Extracted so Start and recreateReader
+// use the same construction logic.
+func (c *KafkaConsumer) buildReader(topic string) *kafka.Reader {
+	return kafka.NewReader(kafka.ReaderConfig{
+		Brokers:     c.cfg.Brokers,
+		GroupID:     c.cfg.GroupID,
+		Topic:       topic,
+		MinBytes:    c.cfg.MinBytes,
+		MaxBytes:    c.cfg.MaxBytes,
+		MaxWait:     c.cfg.MaxWait,
+		StartOffset: c.cfg.StartOffset,
+		// Logger surfaces INFO-level reader events (joins, rebalances,
+		// offset commits). ErrorLogger surfaces fetch/heartbeat/group
+		// errors that would otherwise be swallowed — the common
+		// failure mode here is a consumer evicted from the group
+		// during a rebalance with nobody logging it.
+		Logger:      kafkaLoggerFromSlog(c.cfg.Logger, false),
+		ErrorLogger: kafkaLoggerFromSlog(c.cfg.Logger, true),
+	})
+}
+
+// recreateReader closes old, waits backoff, creates and registers a
+// replacement reader for topic. Returns nil if ctx is cancelled during wait.
+func (c *KafkaConsumer) recreateReader(ctx context.Context, old *kafka.Reader, topic string, backoff time.Duration) *kafka.Reader {
+	c.mu.Lock()
+	_ = old.Close()
+	for i, r := range c.readers {
+		if r == old {
+			c.readers = append(c.readers[:i], c.readers[i+1:]...)
+			break
+		}
+	}
+	c.mu.Unlock()
+
+	select {
+	case <-time.After(backoff):
+	case <-ctx.Done():
+		return nil
+	}
+
+	fresh := c.buildReader(topic)
+	c.mu.Lock()
+	c.readers = append(c.readers, fresh)
+	c.mu.Unlock()
+
+	c.cfg.Logger.Info("consumer reconnected", "topic", topic, "group", c.cfg.GroupID)
+	return fresh
 }
 
 // kafkaLoggerFromSlog adapts a slog.Logger to segmentio's kafka.Logger
@@ -214,6 +293,9 @@ func kafkaLoggerFromSlog(sl *slog.Logger, isError bool) kafka.LoggerFunc {
 func (c *KafkaConsumer) consumeTopic(ctx context.Context, reader *kafka.Reader, topic string) {
 	c.cfg.Logger.Info("consumer started", "topic", topic, "group", c.cfg.GroupID)
 
+	consecutiveErrors := 0
+	backoff := c.cfg.ReconnectBaseBackoff
+
 	for {
 		msg, err := reader.FetchMessage(ctx)
 		if err != nil {
@@ -221,9 +303,33 @@ func (c *KafkaConsumer) consumeTopic(ctx context.Context, reader *kafka.Reader, 
 				c.cfg.Logger.Info("consumer stopping", "topic", topic)
 				return
 			}
-			c.cfg.Logger.Error("fetch failed", "topic", topic, "error", err)
+			consecutiveErrors++
+			c.cfg.Logger.Error("fetch failed",
+				"topic", topic,
+				"error", err,
+				"consecutive_errors", consecutiveErrors,
+				"max_before_reconnect", c.cfg.MaxConsecutiveErrors,
+			)
+			// After MaxConsecutiveErrors failures the reader is likely stuck
+			// (evicted from group, coordinator unreachable, stale connection).
+			// Close it, wait with exponential backoff, then recreate.
+			if consecutiveErrors >= c.cfg.MaxConsecutiveErrors {
+				c.cfg.Logger.Warn("too many consecutive fetch errors, recreating reader",
+					"topic", topic, "backoff", backoff)
+				fresh := c.recreateReader(ctx, reader, topic, backoff)
+				if fresh == nil {
+					return // ctx cancelled during backoff wait
+				}
+				reader = fresh
+				consecutiveErrors = 0
+				backoff = min(backoff*2, c.cfg.ReconnectMaxBackoff)
+			}
 			continue
 		}
+
+		// Successful fetch — reset error counters.
+		consecutiveErrors = 0
+		backoff = c.cfg.ReconnectBaseBackoff
 
 		var event CloudEvent
 		if err := json.Unmarshal(msg.Value, &event); err != nil {
