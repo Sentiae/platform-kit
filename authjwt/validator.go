@@ -62,7 +62,12 @@ type Claims struct {
 	// the platform-admin role. §18.2 — downstream services use this
 	// to gate cross-tenant endpoints.
 	PlatformAdmin bool
-	Raw           jwt.MapClaims
+	// EntsHash is the canonical sha256 of the org's effective
+	// entitlement set (Paradigm Shift §A.7). Downstream services
+	// resolve this hash through Redis to obtain the full entitlement
+	// list for entitlement-gated endpoints.
+	EntsHash string
+	Raw      jwt.MapClaims
 }
 
 // Validator verifies JWTs against a remote JWKS.
@@ -149,6 +154,9 @@ func (v *Validator) Validate(ctx context.Context, token string) (*Claims, error)
 	}
 	if v, ok := claims["platform_admin"].(bool); ok {
 		out.PlatformAdmin = v
+	}
+	if v, ok := claims["ents_hash"].(string); ok {
+		out.EntsHash = v
 	}
 	return out, nil
 }
