@@ -30,6 +30,13 @@ type Config struct {
 
 	// Writer is the output destination. Defaults to os.Stdout.
 	Writer io.Writer
+
+	// ExtraHandlers are additional slog handlers that every record is
+	// teed to, after the context correlation fields are injected. This
+	// is the seam platform-kit/otel uses to also emit each log line as an
+	// OTLP log record (trace-correlated) without any service coupling to
+	// a backend. Nil (the default) keeps the single-sink behaviour.
+	ExtraHandlers []slog.Handler
 }
 
 // ContextKey is a typed key for context values that are automatically
@@ -69,7 +76,15 @@ func New(cfg Config) *slog.Logger {
 		base = slog.NewJSONHandler(w, opts)
 	}
 
-	return slog.New(&contextHandler{inner: base})
+	// When extra sinks are configured (e.g. the OTLP log handler), tee the
+	// enriched record to all of them. contextHandler stays the single place
+	// correlation fields are injected, so both stdout and OTLP see them.
+	inner := base
+	if len(cfg.ExtraHandlers) > 0 {
+		inner = &teeHandler{handlers: append([]slog.Handler{base}, cfg.ExtraHandlers...)}
+	}
+
+	return slog.New(&contextHandler{inner: inner})
 }
 
 // FromContext returns the logger stored in ctx via [NewContext].
@@ -125,4 +140,50 @@ func (h *contextHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 
 func (h *contextHandler) WithGroup(name string) slog.Handler {
 	return &contextHandler{inner: h.inner.WithGroup(name)}
+}
+
+// teeHandler fans one record out to several handlers. It sits inside the
+// contextHandler, so it receives records already enriched with correlation
+// fields. A handler that reports it is not enabled for a level is skipped;
+// a handler error is collected but never blocks the others.
+type teeHandler struct {
+	handlers []slog.Handler
+}
+
+func (t *teeHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, h := range t.handlers {
+		if h.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *teeHandler) Handle(ctx context.Context, r slog.Record) error {
+	var firstErr error
+	for _, h := range t.handlers {
+		if !h.Enabled(ctx, r.Level) {
+			continue
+		}
+		if err := h.Handle(ctx, r.Clone()); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (t *teeHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := make([]slog.Handler, len(t.handlers))
+	for i, h := range t.handlers {
+		next[i] = h.WithAttrs(attrs)
+	}
+	return &teeHandler{handlers: next}
+}
+
+func (t *teeHandler) WithGroup(name string) slog.Handler {
+	next := make([]slog.Handler, len(t.handlers))
+	for i, h := range t.handlers {
+		next[i] = h.WithGroup(name)
+	}
+	return &teeHandler{handlers: next}
 }
