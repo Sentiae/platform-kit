@@ -99,6 +99,61 @@ const (
 	// foundry-service so auditing, Pulse, and cooldowns have a single
 	// per-attempt record.
 	EventWorkSpecDecompositionTriggered = "work.spec.decomposition_triggered"
+
+	// Task lifecycle (BASE.md §5.3).
+	EventWorkTaskCreated       = "work.task.created"
+	EventWorkTaskUpdated       = "work.task.updated"
+	EventWorkTaskAssigned      = "work.task.assigned"
+	EventWorkTaskStatusChanged = "work.task.status_changed"
+	EventWorkTaskDeleted       = "work.task.deleted"
+
+	// Cycle lifecycle (BASE.md §5.5).
+	EventWorkCycleCreated   = "work.cycle.created"
+	EventWorkCycleActivated = "work.cycle.activated"
+	EventWorkCycleCompleted = "work.cycle.completed"
+
+	// Document lifecycle (BASE.md §5.4). body_edited is coalesced per
+	// (document, actor) by the emitter — one event per editing session,
+	// not per debounced save.
+	EventWorkDocumentCreated    = "work.document.created"
+	EventWorkDocumentUpdated    = "work.document.updated"
+	EventWorkDocumentDeleted    = "work.document.deleted"
+	EventWorkDocumentBodyEdited = "work.document.body_edited"
+
+	// ADR (decision) lifecycle.
+	EventWorkADRCreated       = "work.adr.created"
+	EventWorkADRStatusChanged = "work.adr.status_changed"
+	EventWorkADRSuperseded    = "work.adr.superseded"
+
+	// Rich-body (ProseMirror body_doc) edits on spine entities. Same
+	// per-(entity, actor) coalescing contract as document.body_edited.
+	EventWorkProductBodyEdited = "work.product.body_edited"
+	EventWorkFeatureBodyEdited = "work.feature.body_edited"
+	EventWorkSpecBodyEdited    = "work.spec.body_edited"
+
+	// Eve Drafts (eve-drafts.md). Approval materializes the real entity
+	// in the same transaction that stages the event; rejection carries
+	// the mandatory reason so eve can learn from it. Supersession links
+	// the old pending draft to its replacement (eve-draft-producer.md
+	// D4.1 supersede-own).
+	EventWorkDraftCreated    = "work.draft.created"
+	EventWorkDraftApproved   = "work.draft.approved"
+	EventWorkDraftRejected   = "work.draft.rejected"
+	EventWorkDraftSuperseded = "work.draft.superseded"
+
+	// Activity feed push (realtime-push.md D3/D4). Emitted by the
+	// work-service activity projector in the SAME transaction as the
+	// feed insert, carrying the server-derived anchors[] so the BFF can
+	// fan out per-anchor invalidation signals without re-deriving
+	// anchors. Loop-safe by construction: the projector neither maps
+	// this event type nor consumes its topic.
+	EventWorkActivityRecorded = "work.activity.recorded"
+
+	// Mandatory team ownership (ownership.md D7). One event per
+	// (entity, team) add/remove on the entity_owners junction.
+	// identity-service consumes it to maintain the team_ownership_counts
+	// projection that guards DeleteTeam (D3.4).
+	EventWorkOwnershipChanged = "work.ownership.changed"
 )
 
 // ---------- Analytics domain ---------------------------------------------
@@ -138,7 +193,6 @@ const (
 	EventGitAIReviewCompleted = "git.ai_review.completed"
 
 	EventGitReleaseCreated = "git.release.created"
-	EventGitDocStale       = "git.doc.stale"
 
 	// Symbol index lifecycle — published when git-service finishes (or
 	// incrementally updates) the symbol index for a repository. Canvas
@@ -162,7 +216,7 @@ const (
 
 	EventOpsIncidentOpened         = "ops.incident.opened"
 	EventOpsIncidentResolved       = "ops.incident.resolved"
-	EventOpsIncidentWorkItemLinked = "ops.incident.work_item_linked"
+	EventOpsIncidentSpecLinked     = "ops.incident.spec_linked"
 	EventOpsIncidentChannelCreated = "ops.incident.channel_created"
 
 	EventOpsProbeFailure   = "ops.probe.failure"
@@ -269,6 +323,35 @@ const (
 
 	// ---- ops.admin.* (admin / impersonation audit)
 	EventOpsAdminImpersonationStarted = "ops.admin.impersonation.started"
+
+	// Mandatory team ownership (ownership.md D7) — ops mirror of
+	// work.ownership.changed for entity_kind=component.
+	EventOpsOwnershipChanged = "ops.ownership.changed"
+
+	// Derived Facts P0 (docs/designs/derived-facts.md) — a Component's
+	// rich page-builder body was edited (coalesced per component per
+	// editing window). Unlike work's body_edited events, ops carries the
+	// revision + collab_seq watermark so the knowledge-service knows which
+	// snapshot a fact set was derived from. Wire topic: sentiae.ops.component.
+	EventOpsComponentBodyEdited = "ops.component.body_edited"
+)
+
+// ---------- Deployment domain (deployment-service flow/graph runs) -------
+//
+// Distinct from the ops.deploy.* / ops.deployment.* events above: those are
+// ops-service CI/CD deploys; these are deployment-service flow-graph runs.
+// deployment-service stages them on its outbox and drains them to Kafka.
+
+const (
+	// EventDeploymentRunCompleted is emitted after RunDeployment finishes
+	// (success or failure). Wire topic: sentiae.deployment.run. Consumed by
+	// work-service, which ingests it as a deploy Signal on the spine.
+	EventDeploymentRunCompleted = "deployment.run.completed"
+
+	// EventDeploymentLive is emitted when a flow is deployed as a persisted,
+	// re-invokable service (DeployFlow). Wire topic:
+	// sentiae.deployment.deployment.
+	EventDeploymentLive = "deployment.deployment.live"
 )
 
 // ---------- Canvas domain ------------------------------------------------
@@ -312,6 +395,12 @@ const (
 	EventCanvasWorkflowScheduledTrigger = "canvas.workflow.scheduled_trigger"
 
 	EventCanvasCodegenCompleted = "canvas.codegen.completed"
+
+	// EventCodegenBuildCompleted fires when codegen-service's Scaffold persist
+	// saga commits a compiling repo through P2 (RepoWriter) — the build→deliver
+	// spine's first link (event-catalog.md). Consumed by delivery to kick the
+	// image build. Supersedes the unconsumed canvas.codegen.completed above.
+	EventCodegenBuildCompleted = "codegen.build.completed"
 
 	EventCanvasRuntimeDeployed   = "canvas.runtime.deployed"
 	EventCanvasRuntimeUndeployed = "canvas.runtime.undeployed"
@@ -480,7 +569,6 @@ const (
 
 	EventGitLegacyAIReviewCompleted = "sentiae.git.ai_review.completed"
 	EventGitLegacyReleaseCreated    = "sentiae.git.release.created"
-	EventGitLegacyDocStale          = "sentiae.git.doc.stale"
 )
 
 // ---------- Data domain --------------------------------------------------
@@ -683,10 +771,10 @@ const (
 // ---------- Identity domain ---------------------------------------------
 
 const (
-	EventIdentityUserRegistered      = "identity.user.registered"
-	EventIdentityUserUpdated         = "identity.user.updated"
-	EventIdentityUserDeleted         = "identity.user.deleted"
-	EventIdentityUserLoggedIn        = "identity.user.logged_in"
+	EventIdentityUserRegistered = "identity.user.registered"
+	EventIdentityUserUpdated    = "identity.user.updated"
+	EventIdentityUserDeleted    = "identity.user.deleted"
+	EventIdentityUserLoggedIn   = "identity.user.logged_in"
 	// EventIdentityUserFirstLogin fires exactly once per user, on the
 	// first successful login. Consumed by foundry's reactive rule engine
 	// to dispatch Eve's "What would you like to build today?" welcome.
@@ -892,8 +980,6 @@ var registeredEvents = []RegisteredEvent{
 
 	{EventGitReleaseCreated, "git", "A release was created", "git-service",
 		dataSchema("git.release.created", []string{"tag"}, `"tag":{"type":"string"},"title":{"type":"string"}`)},
-	{EventGitDocStale, "git", "A document was flagged as stale", "git-service",
-		dataSchema("git.doc.stale", []string{"path"}, `"path":{"type":"string"},"reason":{"type":"string"}`)},
 	{EventGitSymbolIndexUpdated, "git", "Symbol index was refreshed", "git-service",
 		dataSchema("git.symbol_index.updated", []string{"repository_id"}, `"repository_id":{"type":"string"},"commit_sha":{"type":"string"},"symbols":{"type":"array"}`)},
 
@@ -922,8 +1008,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("ops.incident.opened", []string{"severity", "title"}, `"severity":{"type":"string"},"title":{"type":"string"}`)},
 	{EventOpsIncidentResolved, "ops", "An incident was resolved", "ops-service",
 		dataSchema("ops.incident.resolved", nil, `"resolution":{"type":"string"},"duration_ms":{"type":"integer"}`)},
-	{EventOpsIncidentWorkItemLinked, "ops", "A work item was linked to an incident", "ops-service",
-		dataSchema("ops.incident.work_item_linked", []string{"incident_id", "work_item_id"}, `"incident_id":{"type":"string"},"work_item_id":{"type":"string"}`)},
+	{EventOpsIncidentSpecLinked, "ops", "A remediation spec was linked to an incident", "ops-service",
+		dataSchema("ops.incident.spec_linked", []string{"incident_id", "spec_id"}, `"incident_id":{"type":"string"},"spec_id":{"type":"string"}`)},
 	{EventOpsIncidentChannelCreated, "ops", "An incident channel was created", "ops-service",
 		dataSchema("ops.incident.channel_created", []string{"incident_id", "channel"}, `"incident_id":{"type":"string"},"channel":{"type":"string"}`)},
 
@@ -971,6 +1057,12 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("ops.test.triggered", []string{"suite", "trigger"}, `"suite":{"type":"string"},"trigger":{"type":"string"}`)},
 	{EventOpsMonitoringAnomaly, "ops", "A monitoring anomaly was detected", "ops-service",
 		dataSchema("ops.monitoring.anomaly", []string{"metric"}, `"metric":{"type":"string"},"value":{"type":"number"},"expected":{"type":"number"}`)},
+
+	// Deployment (deployment-service flow/graph runs) --------------------
+	{EventDeploymentRunCompleted, "deployment", "A flow deployment run finished (success or failure)", "deployment-service",
+		dataSchema("deployment.run.completed", []string{"deployment_id"}, `"deployment_id":{"type":"string"},"organization_id":{"type":"string"},"flow_id":{"type":"string"},"environment":{"type":"string"},"status":{"type":"string"},"runtime_execution_id":{"type":"string"},"node_count":{"type":"integer"},"error":{"type":"string"}`)},
+	{EventDeploymentLive, "deployment", "A flow was deployed as a persisted, re-invokable service", "deployment-service",
+		dataSchema("deployment.deployment.live", []string{"deployment_id"}, `"deployment_id":{"type":"string"},"organization_id":{"type":"string"},"flow_id":{"type":"string"},"environment":{"type":"string"},"status":{"type":"string"},"url":{"type":"string"},"node_count":{"type":"integer"}`)},
 
 	// Canvas -------------------------------------------------------------
 	{EventCanvasCreated, "canvas", "A canvas was created", "canvas-service",
@@ -1042,6 +1134,8 @@ var registeredEvents = []RegisteredEvent{
 
 	{EventCanvasCodegenCompleted, "canvas", "Canvas code generation completed", "canvas-service",
 		dataSchema("canvas.codegen.completed", nil, `"canvas_id":{"type":"string"},"language":{"type":"string"},"files":{"type":"integer"}`)},
+	{EventCodegenBuildCompleted, "codegen", "codegen committed a compiling repo (Scaffold persist)", "codegen-service",
+		dataSchema("codegen.build.completed", []string{"component_id", "repo_ref", "commit_sha", "stack", "compiled"}, `"component_id":{"type":"string"},"repo_ref":{"type":"string"},"commit_sha":{"type":"string"},"stack":{"type":"string"},"compiled":{"type":"boolean"}`)},
 
 	{EventCanvasRuntimeDeployed, "canvas", "Canvas runtime deployment", "canvas-service",
 		dataSchema("canvas.runtime.deployed", nil, `"canvas_id":{"type":"string"},"deployment_id":{"type":"string"}`)},
@@ -1598,6 +1692,14 @@ var registeredEvents = []RegisteredEvent{
 	{EventOpsAdminImpersonationStarted, "ops", "Admin impersonation session started", "ops-service",
 		dataSchema("ops.admin.impersonation.started", nil, `"admin_id":{"type":"string"},"target_user_id":{"type":"string"},"reason":{"type":"string"}`)},
 
+	// ---- Mandatory team ownership (ownership.md D7) -------------------
+	{EventOpsOwnershipChanged, "ops", "A team was added to or removed from an ops entity's (component) owner set", "ops-service",
+		dataSchema("ops.ownership.changed", []string{"entity_kind", "entity_id", "team_id", "action"}, `"entity_kind":{"type":"string"},"entity_id":{"type":"string"},"team_id":{"type":"string"},"action":{"type":"string","enum":["added","removed"]},"actor":{"type":"string"}`)},
+
+	// ---- Derived Facts P0 (docs/designs/derived-facts.md) -------------
+	{EventOpsComponentBodyEdited, "ops", "A component's rich page-builder body was edited (coalesced per editing window); revision + collab_seq are the fact-derivation watermark", "ops-service",
+		dataSchema("ops.component.body_edited", []string{"revision", "collab_seq"}, `"name":{"type":"string"},"cause":{"type":"string"},"revision":{"type":"integer"},"collab_seq":{"type":"integer"}`)},
+
 	// ---- Canvas additions ---------------------------------------------
 	{EventCanvasImportProgress, "canvas", "Repository import progress update", "canvas-service",
 		dataSchema("canvas.import.progress", nil, `"repository":{"type":"string"},"phase":{"type":"string"},"percent":{"type":"number"}`)},
@@ -1659,8 +1761,6 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("sentiae.git.ai_review.completed", nil, `"pr_number":{"type":"integer"},"verdict":{"type":"string"}`)},
 	{EventGitLegacyReleaseCreated, "sentiae", "Release created (legacy)", "git-service",
 		dataSchema("sentiae.git.release.created", nil, `"tag":{"type":"string"}`)},
-	{EventGitLegacyDocStale, "sentiae", "Doc flagged stale (legacy)", "git-service",
-		dataSchema("sentiae.git.doc.stale", nil, `"path":{"type":"string"},"reason":{"type":"string"}`)},
 
 	// ---- Hierarchical spec events ------------------------------------
 	{EventWorkSpecChildCreated, "work", "A child spec was created under a parent spec", "work-service",
@@ -1677,6 +1777,70 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("work.feature.code_health_updated", []string{"feature_id"}, `"feature_id":{"type":"string"},"churn_score":{"type":"number"},"test_coverage_pct":{"type":"number"},"static_analysis_severity":{"type":"string"},"commit_count_7d":{"type":"integer"},"pr_count_7d":{"type":"integer"}`)},
 	{EventWorkFeatureCostUpdated, "work", "Feature live cost attribution was updated", "work-service",
 		dataSchema("work.feature.cost_updated", []string{"feature_id"}, `"feature_id":{"type":"string"},"cost_usd_24h":{"type":"number"},"source":{"type":"string"}`)},
+
+	// ---- Task lifecycle ------------------------------------------------
+	{EventWorkTaskCreated, "work", "A task was created", "work-service",
+		dataSchema("work.task.created", []string{"spec_id", "title"}, `"spec_id":{"type":"string"},"title":{"type":"string"},"status":{"type":"string"},"priority":{"type":"string"}`)},
+	{EventWorkTaskUpdated, "work", "A task was updated", "work-service",
+		dataSchema("work.task.updated", []string{"spec_id"}, `"spec_id":{"type":"string"},"changes":{"type":"object"}`)},
+	{EventWorkTaskAssigned, "work", "A task was (re)assigned", "work-service",
+		dataSchema("work.task.assigned", []string{"spec_id"}, `"spec_id":{"type":"string"},"old_assignee":{"type":"string"},"new_assignee":{"type":"string"}`)},
+	{EventWorkTaskStatusChanged, "work", "A task's status changed", "work-service",
+		dataSchema("work.task.status_changed", []string{"spec_id", "new_status"}, `"spec_id":{"type":"string"},"old_status":{"type":"string"},"new_status":{"type":"string"}`)},
+	{EventWorkTaskDeleted, "work", "A task was deleted", "work-service",
+		dataSchema("work.task.deleted", []string{"spec_id"}, `"spec_id":{"type":"string"}`)},
+
+	// ---- Cycle lifecycle -----------------------------------------------
+	{EventWorkCycleCreated, "work", "A cycle was created", "work-service",
+		dataSchema("work.cycle.created", []string{"name"}, `"name":{"type":"string"},"project_id":{"type":"string"},"starts_at":{"type":"string"},"ends_at":{"type":"string"},"status":{"type":"string"}`)},
+	{EventWorkCycleActivated, "work", "A cycle was activated", "work-service",
+		dataSchema("work.cycle.activated", []string{"name"}, `"name":{"type":"string"}`)},
+	{EventWorkCycleCompleted, "work", "A cycle was completed", "work-service",
+		dataSchema("work.cycle.completed", []string{"name"}, `"name":{"type":"string"}`)},
+
+	// ---- Document lifecycle ----------------------------------------------
+	{EventWorkDocumentCreated, "work", "A document was created", "work-service",
+		dataSchema("work.document.created", []string{"title"}, `"title":{"type":"string"},"doc_type":{"type":"string"},"product_id":{"type":"string"},"feature_id":{"type":"string"},"project_id":{"type":"string"}`)},
+	{EventWorkDocumentUpdated, "work", "A document was updated", "work-service",
+		dataSchema("work.document.updated", []string{"title"}, `"title":{"type":"string"},"changes":{"type":"object"}`)},
+	{EventWorkDocumentDeleted, "work", "A document was deleted", "work-service",
+		dataSchema("work.document.deleted", nil, `"title":{"type":"string"}`)},
+	{EventWorkDocumentBodyEdited, "work", "A document body was edited (coalesced per editing session)", "work-service",
+		dataSchema("work.document.body_edited", []string{"title"}, `"title":{"type":"string"}`)},
+
+	// ---- ADR (decision) lifecycle ----------------------------------------
+	{EventWorkADRCreated, "work", "An architecture decision record was created", "work-service",
+		dataSchema("work.adr.created", []string{"title"}, `"title":{"type":"string"},"status":{"type":"string"},"product_id":{"type":"string"}`)},
+	{EventWorkADRStatusChanged, "work", "An ADR's status changed", "work-service",
+		dataSchema("work.adr.status_changed", []string{"new_status"}, `"title":{"type":"string"},"old_status":{"type":"string"},"new_status":{"type":"string"},"product_id":{"type":"string"}`)},
+	{EventWorkADRSuperseded, "work", "An ADR was superseded by a newer decision", "work-service",
+		dataSchema("work.adr.superseded", []string{"superseded_by_id"}, `"title":{"type":"string"},"superseded_by_id":{"type":"string"},"product_id":{"type":"string"}`)},
+
+	// ---- Spine body edits (coalesced) -------------------------------------
+	{EventWorkProductBodyEdited, "work", "A product's rich body was edited (coalesced per editing session)", "work-service",
+		dataSchema("work.product.body_edited", nil, `"name":{"type":"string"}`)},
+	{EventWorkFeatureBodyEdited, "work", "A feature's rich body was edited (coalesced per editing session)", "work-service",
+		dataSchema("work.feature.body_edited", nil, `"name":{"type":"string"},"product_id":{"type":"string"}`)},
+	{EventWorkSpecBodyEdited, "work", "A spec's rich body was edited (coalesced per editing session)", "work-service",
+		dataSchema("work.spec.body_edited", nil, `"title":{"type":"string"},"feature_id":{"type":"string"},"project_id":{"type":"string"}`)},
+
+	// ---- Eve Drafts (eve-drafts.md) ----------------------------------------
+	{EventWorkDraftCreated, "work", "A pending draft was created (eve-only path; powers realtime push of Home waiting-on-you + pendingDrafts)", "work-service",
+		dataSchema("work.draft.created", []string{"kind", "target_kind", "target_id"}, `"kind":{"type":"string"},"target_kind":{"type":"string"},"target_id":{"type":"string"},"title":{"type":"string"},"origin_kind":{"type":"string"},"origin_ref":{"type":"string"},"requested_by":{"type":"string"}`)},
+	{EventWorkDraftApproved, "work", "A draft was approved and materialized into its real entity", "work-service",
+		dataSchema("work.draft.approved", []string{"kind", "target_kind", "target_id"}, `"kind":{"type":"string"},"target_kind":{"type":"string"},"target_id":{"type":"string"},"title":{"type":"string"},"origin_kind":{"type":"string"},"origin_ref":{"type":"string"},"decided_rev":{"type":"integer"},"entity_kind":{"type":"string"},"entity_id":{"type":"string"}`)},
+	{EventWorkDraftRejected, "work", "A draft was rejected with a reason (eve consumes this as feedback)", "work-service",
+		dataSchema("work.draft.rejected", []string{"kind", "target_kind", "target_id", "reason"}, `"kind":{"type":"string"},"target_kind":{"type":"string"},"target_id":{"type":"string"},"title":{"type":"string"},"origin_kind":{"type":"string"},"origin_ref":{"type":"string"},"reason":{"type":"string"}`)},
+	{EventWorkDraftSuperseded, "work", "A pending draft was replaced by a new one (eve supersede-own after new evidence)", "work-service",
+		dataSchema("work.draft.superseded", []string{"kind", "target_kind", "target_id", "new_draft_id"}, `"kind":{"type":"string"},"target_kind":{"type":"string"},"target_id":{"type":"string"},"title":{"type":"string"},"origin_kind":{"type":"string"},"origin_ref":{"type":"string"},"note":{"type":"string"},"new_draft_id":{"type":"string"}`)},
+
+	// ---- Activity feed push (realtime-push.md D3/D4) -------------------------
+	{EventWorkActivityRecorded, "work", "An activity feed row was projected; carries the server-derived anchors for BFF per-anchor invalidation fan-out", "work-service",
+		dataSchema("work.activity.recorded", []string{"activity_id", "anchors"}, `"activity_id":{"type":"string"},"kind":{"type":"string"},"event_type":{"type":"string"},"anchors":{"type":"array","items":{"type":"object","properties":{"kind":{"type":"string"},"id":{"type":"string"}},"required":["kind","id"]}},"occurred_at":{"type":"string"}`)},
+
+	// ---- Mandatory team ownership (ownership.md D7) -------------------------
+	{EventWorkOwnershipChanged, "work", "A team was added to or removed from a work entity's owner set", "work-service",
+		dataSchema("work.ownership.changed", []string{"entity_kind", "entity_id", "team_id", "action"}, `"entity_kind":{"type":"string"},"entity_id":{"type":"string"},"team_id":{"type":"string"},"action":{"type":"string","enum":["added","removed"]},"actor":{"type":"string"}`)},
 
 	// ---- Analytics ---------------------------------------------------
 	{EventAnalyticsUsageRecorded, "analytics", "A single user action was recorded against a feature", "portal",
