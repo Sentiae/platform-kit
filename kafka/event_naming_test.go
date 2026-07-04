@@ -35,7 +35,6 @@ var knownLegacyDoublePrefix = map[string]bool{
 	"sentiae.git.session.closed":         true,
 	"sentiae.git.ai_review.completed":    true,
 	"sentiae.git.release.created":        true,
-	"sentiae.git.doc.stale":              true,
 }
 
 // knownDomainMismatch is the explicit allow-list of taxonomy entries whose
