@@ -336,6 +336,31 @@ const (
 	EventOpsComponentBodyEdited = "ops.component.body_edited"
 )
 
+// ---------- Delivery domain (the build→deploy→operate spine) --------------
+//
+// delivery-service (net-new, CP3) owns the build/deploy/retarget saga and emits
+// these. catalog-service consumes image.built / test.completed / deploy.completed
+// / retarget.completed to maintain the Component↔Repo↔Image↔Deployment links and
+// drive the CL1 lifecycle machine (event-catalog.md; catalog pillar §3/§6).
+// Registered here because catalog consumes them before delivery exists; the
+// producer identity is not part of the contract.
+const (
+	EventDeliveryImageBuilt        = "delivery.image.built"
+	EventDeliveryTestCompleted     = "delivery.test.completed"
+	EventDeliveryDeployCompleted   = "delivery.deploy.completed"
+	EventDeliveryRetargetCompleted = "delivery.retarget.completed"
+)
+
+// ---------- Catalog domain (system-model lifecycle) -----------------------
+//
+// catalog-service emits these via its transactional outbox (invariant I10).
+// lifecycle_changed drives the CL1 planned→building→testing→live machine off
+// real events; arch.applied is Eve's apply_architecture result (event-catalog.md).
+const (
+	EventCatalogComponentLifecycleChanged = "catalog.component.lifecycle_changed"
+	EventCatalogArchApplied               = "catalog.arch.applied"
+)
+
 // ---------- Deployment domain (deployment-service flow/graph runs) -------
 //
 // Distinct from the ops.deploy.* / ops.deployment.* events above: those are
@@ -1136,6 +1161,22 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("canvas.codegen.completed", nil, `"canvas_id":{"type":"string"},"language":{"type":"string"},"files":{"type":"integer"}`)},
 	{EventCodegenBuildCompleted, "codegen", "codegen committed a compiling repo (Scaffold persist)", "codegen-service",
 		dataSchema("codegen.build.completed", []string{"component_id", "repo_ref", "commit_sha", "stack", "compiled"}, `"component_id":{"type":"string"},"repo_ref":{"type":"string"},"commit_sha":{"type":"string"},"stack":{"type":"string"},"compiled":{"type":"boolean"}`)},
+
+	// Delivery — the build→deploy→operate spine (consumed by catalog).
+	{EventDeliveryImageBuilt, "delivery", "delivery built a container image for a component", "delivery-service",
+		dataSchema("delivery.image.built", []string{"component_id"}, `"component_id":{"type":"string"},"commit_sha":{"type":"string"},"image_ref":{"type":"object"}`)},
+	{EventDeliveryTestCompleted, "delivery", "delivery finished the test stage for a built image", "delivery-service",
+		dataSchema("delivery.test.completed", []string{"component_id"}, `"component_id":{"type":"string"},"image_ref":{"type":"object"},"passed":{"type":"boolean"},"coverage":{"type":"number"},"report_ref":{"type":"string"}`)},
+	{EventDeliveryDeployCompleted, "delivery", "delivery finished deploying a component to an environment", "delivery-service",
+		dataSchema("delivery.deploy.completed", []string{"component_id", "env"}, `"component_id":{"type":"string"},"env":{"type":"string"},"target_class":{"type":"string"},"image_ref":{"type":"object"},"url":{"type":"string"},"deploy_id":{"type":"string"}`)},
+	{EventDeliveryRetargetCompleted, "delivery", "delivery retargeted a component×environment to a new class", "delivery-service",
+		dataSchema("delivery.retarget.completed", []string{"component_id", "env"}, `"component_id":{"type":"string"},"env":{"type":"string"},"from_target":{"type":"string"},"to_target":{"type":"string"}`)},
+
+	// Catalog — system-model lifecycle (emitted by catalog via its outbox).
+	{EventCatalogComponentLifecycleChanged, "catalog", "A component's lifecycle advanced (planned→building→testing→live)", "catalog-service",
+		dataSchema("catalog.component.lifecycle_changed", []string{"component_id", "from", "to"}, `"component_id":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}`)},
+	{EventCatalogArchApplied, "catalog", "An architecture graph was applied onto a component", "catalog-service",
+		dataSchema("catalog.arch.applied", []string{"graph_id"}, `"graph_id":{"type":"string"},"component_ids":{"type":"array"},"feature_component_pairs":{"type":"array"}`)},
 
 	{EventCanvasRuntimeDeployed, "canvas", "Canvas runtime deployment", "canvas-service",
 		dataSchema("canvas.runtime.deployed", nil, `"canvas_id":{"type":"string"},"deployment_id":{"type":"string"}`)},
