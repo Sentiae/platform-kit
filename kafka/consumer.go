@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/segmentio/kafka-go"
@@ -27,11 +29,6 @@ type ConsumerConfig struct {
 	DeadLetterFunc DeadLetterFunc // Called when a message exhausts retries (optional)
 	Logger         *slog.Logger
 
-	// StartupJitter is the delay between successive reader startups. Staggering
-	// prevents all readers from joining the consumer group coordinator
-	// simultaneously (thundering herd). Default: 200ms.
-	StartupJitter time.Duration
-
 	// MaxConsecutiveErrors is the number of consecutive FetchMessage failures
 	// before the reader is closed and recreated with exponential backoff.
 	// Default: 5.
@@ -45,6 +42,16 @@ type ConsumerConfig struct {
 	// ReconnectMaxBackoff caps exponential backoff for reader recreation.
 	// Default: 30s.
 	ReconnectMaxBackoff time.Duration
+
+	// AssignmentDeadline bounds how long the assignment-assertion goroutine
+	// waits for the consumer group to receive at least one partition before
+	// concluding the group is stable with zero partitions (the silent
+	// no-fetch failure mode). Default: 60s.
+	AssignmentDeadline time.Duration
+
+	// AssignmentPollInterval is how often the assignment-assertion goroutine
+	// polls the group coordinator for partition assignments. Default: 5s.
+	AssignmentPollInterval time.Duration
 
 	// DisableSchemaValidation skips the per-message taxonomy check. Default
 	// false. When enabled, every message's payload is validated against the
@@ -86,9 +93,6 @@ func (c *ConsumerConfig) defaults() {
 	if c.Logger == nil {
 		c.Logger = slog.Default()
 	}
-	if c.StartupJitter == 0 {
-		c.StartupJitter = 200 * time.Millisecond
-	}
 	if c.MaxConsecutiveErrors == 0 {
 		c.MaxConsecutiveErrors = 5
 	}
@@ -98,14 +102,31 @@ func (c *ConsumerConfig) defaults() {
 	if c.ReconnectMaxBackoff == 0 {
 		c.ReconnectMaxBackoff = 30 * time.Second
 	}
+	if c.AssignmentDeadline == 0 {
+		c.AssignmentDeadline = 60 * time.Second
+	}
+	if c.AssignmentPollInterval == 0 {
+		c.AssignmentPollInterval = 5 * time.Second
+	}
+}
+
+// groupDescriber is the seam used to query the consumer group's current
+// partition assignments. Satisfied by *kafka.Client; tests inject a fake.
+type groupDescriber interface {
+	DescribeGroups(ctx context.Context, req *kafka.DescribeGroupsRequest) (*kafka.DescribeGroupsResponse, error)
 }
 
 // KafkaConsumer consumes CloudEvent messages from Kafka.
 type KafkaConsumer struct {
-	cfg      ConsumerConfig
-	handlers map[string]EventHandler
-	readers  []*kafka.Reader
-	mu       sync.Mutex
+	cfg       ConsumerConfig
+	handlers  map[string]EventHandler
+	reader    *kafka.Reader
+	describer groupDescriber
+	mu        sync.Mutex
+
+	// assignErr holds the fatal "stable group with zero partitions" error
+	// once the assignment-assertion goroutine concludes. nil until then.
+	assignErr atomic.Pointer[error]
 
 	// health tracks per-topic last-processed info for /healthz/events.
 	health   map[string]*topicHealth
@@ -138,29 +159,36 @@ func NewConsumer(cfg ConsumerConfig) (*KafkaConsumer, error) {
 	cfg.defaults()
 
 	return &KafkaConsumer{
-		cfg:      cfg,
-		handlers: make(map[string]EventHandler),
-		health:   make(map[string]*topicHealth),
+		cfg:       cfg,
+		handlers:  make(map[string]EventHandler),
+		health:    make(map[string]*topicHealth),
+		describer: &kafka.Client{Addr: kafka.TCP(cfg.Brokers...)},
 	}, nil
 }
 
 // Health returns a snapshot of per-topic processing stats. Safe for /healthz.
+// Lag is recorded per-message at process time (HighWaterMark - Offset - 1);
+// under a GroupTopics reader Config().Topic is empty so no reader lookup is
+// possible or needed here.
 func (c *KafkaConsumer) Health() []topicHealth {
 	c.healthMu.RLock()
 	defer c.healthMu.RUnlock()
 	out := make([]topicHealth, 0, len(c.health))
 	for _, h := range c.health {
-		// Update lag lazily from the current reader stats.
-		snap := *h
-		for _, r := range c.readers {
-			if r.Config().Topic == h.Topic {
-				snap.Lag = r.Lag()
-				break
-			}
-		}
-		out = append(out, snap)
+		out = append(out, *h)
 	}
 	return out
+}
+
+// AssignmentError returns the fatal error recorded when the consumer group
+// reached the assignment deadline with zero partitions assigned (messages
+// will never be fetched). Returns nil when the group is healthy or the
+// assertion has not yet concluded.
+func (c *KafkaConsumer) AssignmentError() error {
+	if p := c.assignErr.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 // SubscribedTypes returns the set of event types this consumer has handlers for.
@@ -183,99 +211,110 @@ func (c *KafkaConsumer) Subscribe(eventType string, handler EventHandler) {
 
 // Start begins consuming messages. It blocks until ctx is cancelled.
 //
+// A single reader is created over all configured topics via the segmentio
+// GroupTopics API — one member of the consumer group subscribing to every
+// topic. This is deliberate: creating one single-topic reader per topic under
+// a shared GroupID produces a Stable group where each member is assigned zero
+// partitions, so messages are never fetched (observed live 2026-07-05).
+//
 // Errors from the underlying segmentio Reader (rebalance failures,
 // coordinator disconnects, group session timeouts) are routed through
 // cfg.Logger so operational issues become visible in logs; previously
 // those errors were silent, which allowed a consumer to appear "started"
 // indefinitely while actually not consuming anything.
 //
-// Readers are started with a StartupJitter delay between each one to avoid
-// thundering-herd on the consumer group coordinator when many topics are
-// consumed simultaneously.
+// Start also launches an assignment-assertion goroutine that fails loud if
+// the group never receives a partition assignment (see AssignmentError).
 func (c *KafkaConsumer) Start(ctx context.Context) error {
-	var wg sync.WaitGroup
-	for i, topic := range c.cfg.Topics {
-		// Stagger reader joins: reader i waits i*jitter before starting.
-		// This spreads the group coordinator load across time instead of
-		// hitting it with all N readers simultaneously.
-		if i > 0 {
-			select {
-			case <-time.After(time.Duration(i) * c.cfg.StartupJitter):
-			case <-ctx.Done():
-				wg.Wait()
-				return ctx.Err()
+	reader := c.buildReader()
+	c.mu.Lock()
+	c.reader = reader
+	c.mu.Unlock()
+
+	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				c.cfg.Logger.Error("assignment assertion goroutine panicked",
+					"group", c.cfg.GroupID, "panic", r)
 			}
-		}
+		}()
+		c.assertAssignment(ctx)
+	}()
 
-		reader := c.buildReader(topic)
-		c.mu.Lock()
-		c.readers = append(c.readers, reader)
-		c.mu.Unlock()
-
-		wg.Add(1)
-		go func(r *kafka.Reader, t string) {
-			defer wg.Done()
-			c.consumeTopic(ctx, r, t)
-		}(reader, topic)
-	}
-
-	wg.Wait()
+	c.consumeLoop(ctx)
 	return nil
 }
 
-// buildReader creates a new kafka.Reader for the given topic using the
-// consumer's configured settings. Extracted so Start and recreateReader
-// use the same construction logic.
-func (c *KafkaConsumer) buildReader(topic string) *kafka.Reader {
+// buildReader creates the single kafka.Reader over all configured topics using
+// the consumer's settings. Extracted so Start and recreateReader share it.
+func (c *KafkaConsumer) buildReader() *kafka.Reader {
 	return kafka.NewReader(kafka.ReaderConfig{
 		Brokers:     c.cfg.Brokers,
 		GroupID:     c.cfg.GroupID,
-		Topic:       topic,
+		GroupTopics: c.cfg.Topics,
 		MinBytes:    c.cfg.MinBytes,
 		MaxBytes:    c.cfg.MaxBytes,
 		MaxWait:     c.cfg.MaxWait,
 		StartOffset: c.cfg.StartOffset,
-		// Logger surfaces INFO-level reader events (joins, rebalances,
-		// offset commits). ErrorLogger surfaces fetch/heartbeat/group
-		// errors that would otherwise be swallowed — the common
-		// failure mode here is a consumer evicted from the group
-		// during a rebalance with nobody logging it.
+		// Logger surfaces group-lifecycle reader events (joins, rebalances,
+		// partition assignments) at INFO and routine fetch/commit chatter at
+		// DEBUG. ErrorLogger surfaces fetch/heartbeat/group errors that would
+		// otherwise be swallowed — the common failure mode here is a consumer
+		// evicted from the group during a rebalance with nobody logging it.
 		Logger:      kafkaLoggerFromSlog(c.cfg.Logger, false),
 		ErrorLogger: kafkaLoggerFromSlog(c.cfg.Logger, true),
 	})
 }
 
-// recreateReader closes old, waits backoff, creates and registers a
-// replacement reader for topic. Returns nil if ctx is cancelled during wait.
-func (c *KafkaConsumer) recreateReader(ctx context.Context, old *kafka.Reader, topic string, backoff time.Duration) *kafka.Reader {
+// recreateReader closes old, waits backoff, then builds and stores a fresh
+// reader. Returns false if ctx is cancelled during the backoff wait.
+func (c *KafkaConsumer) recreateReader(ctx context.Context, old *kafka.Reader, backoff time.Duration) bool {
 	c.mu.Lock()
 	_ = old.Close()
-	for i, r := range c.readers {
-		if r == old {
-			c.readers = append(c.readers[:i], c.readers[i+1:]...)
-			break
-		}
-	}
 	c.mu.Unlock()
 
 	select {
 	case <-time.After(backoff):
 	case <-ctx.Done():
-		return nil
+		return false
 	}
 
-	fresh := c.buildReader(topic)
+	fresh := c.buildReader()
 	c.mu.Lock()
-	c.readers = append(c.readers, fresh)
+	c.reader = fresh
 	c.mu.Unlock()
 
-	c.cfg.Logger.Info("consumer reconnected", "topic", topic, "group", c.cfg.GroupID)
-	return fresh
+	c.cfg.Logger.Info("consumer reconnected", "group", c.cfg.GroupID)
+	return true
+}
+
+// groupLifecycleMarkers are case-insensitive substrings of segmentio kafka-go
+// log messages that indicate consumer-group lifecycle events (join / leave /
+// rebalance / sync / partition assignment). Matched messages are promoted to
+// INFO; everything else (fetch loop, offset commit chatter) stays at DEBUG.
+//
+// Each marker is proven to occur in kafka-go@v0.4.50 source:
+//   - "joined group"                        consumergroup.go:806, :952
+//   - "leaving group"                       consumergroup.go:1212
+//   - "rebalancing group"                   consumergroup.go:530
+//   - "sync group finished"                 consumergroup.go:1104
+//   - "received empty assignments"          consumergroup.go:1099
+//   - "assigned member/topic/partitions"    consumergroup.go:966
+//   - "subscribed to topics and partitions" reader.go:141
+var groupLifecycleMarkers = []string{
+	"joined group",
+	"leaving group",
+	"rebalancing group",
+	"sync group finished",
+	"received empty assignments",
+	"assigned member/topic/partitions",
+	"subscribed to topics and partitions",
 }
 
 // kafkaLoggerFromSlog adapts a slog.Logger to segmentio's kafka.Logger
-// interface. isError controls the log level on the slog side so ErrorLogger
-// messages don't get mixed with routine INFO traffic.
+// interface. isError logs at Error. Non-error messages are promoted to Info
+// when they match a group-lifecycle marker, else logged at Debug so routine
+// fetch/commit chatter doesn't spam logs while group joins stay loud.
 func kafkaLoggerFromSlog(sl *slog.Logger, isError bool) kafka.LoggerFunc {
 	if sl == nil {
 		sl = slog.Default()
@@ -284,28 +323,42 @@ func kafkaLoggerFromSlog(sl *slog.Logger, isError bool) kafka.LoggerFunc {
 		formatted := fmt.Sprintf(msg, args...)
 		if isError {
 			sl.Error("kafka reader", "message", formatted)
-		} else {
-			sl.Debug("kafka reader", "message", formatted)
+			return
 		}
+		lower := strings.ToLower(formatted)
+		for _, m := range groupLifecycleMarkers {
+			if strings.Contains(lower, m) {
+				sl.Info("kafka reader", "message", formatted)
+				return
+			}
+		}
+		sl.Debug("kafka reader", "message", formatted)
 	}
 }
 
-func (c *KafkaConsumer) consumeTopic(ctx context.Context, reader *kafka.Reader, topic string) {
-	c.cfg.Logger.Info("consumer started", "topic", topic, "group", c.cfg.GroupID)
+// consumeLoop runs the single fetch → handle → commit loop until ctx is
+// cancelled, recreating the reader with exponential backoff after too many
+// consecutive fetch failures.
+func (c *KafkaConsumer) consumeLoop(ctx context.Context) {
+	c.cfg.Logger.Info("consumer started", "group", c.cfg.GroupID, "topics", c.cfg.Topics)
 
 	consecutiveErrors := 0
 	backoff := c.cfg.ReconnectBaseBackoff
 
 	for {
+		c.mu.Lock()
+		reader := c.reader
+		c.mu.Unlock()
+
 		msg, err := reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				c.cfg.Logger.Info("consumer stopping", "topic", topic)
+				c.cfg.Logger.Info("consumer stopping", "group", c.cfg.GroupID)
 				return
 			}
 			consecutiveErrors++
 			c.cfg.Logger.Error("fetch failed",
-				"topic", topic,
+				"group", c.cfg.GroupID,
 				"error", err,
 				"consecutive_errors", consecutiveErrors,
 				"max_before_reconnect", c.cfg.MaxConsecutiveErrors,
@@ -315,12 +368,10 @@ func (c *KafkaConsumer) consumeTopic(ctx context.Context, reader *kafka.Reader, 
 			// Close it, wait with exponential backoff, then recreate.
 			if consecutiveErrors >= c.cfg.MaxConsecutiveErrors {
 				c.cfg.Logger.Warn("too many consecutive fetch errors, recreating reader",
-					"topic", topic, "backoff", backoff)
-				fresh := c.recreateReader(ctx, reader, topic, backoff)
-				if fresh == nil {
+					"group", c.cfg.GroupID, "backoff", backoff)
+				if !c.recreateReader(ctx, reader, backoff) {
 					return // ctx cancelled during backoff wait
 				}
-				reader = fresh
 				consecutiveErrors = 0
 				backoff = min(backoff*2, c.cfg.ReconnectMaxBackoff)
 			}
@@ -331,79 +382,177 @@ func (c *KafkaConsumer) consumeTopic(ctx context.Context, reader *kafka.Reader, 
 		consecutiveErrors = 0
 		backoff = c.cfg.ReconnectBaseBackoff
 
-		var event CloudEvent
-		if err := json.Unmarshal(msg.Value, &event); err != nil {
-			c.cfg.Logger.Error("unmarshal failed",
-				"topic", topic,
-				"offset", msg.Offset,
-				"error", err,
-			)
-			c.sendToDeadLetter(ctx, msg, "", 0, fmt.Errorf("unmarshal: %w", err))
-			_ = reader.CommitMessages(ctx, msg)
-			continue
-		}
+		c.handleFetchedMessage(ctx, msg)
 
-		c.mu.Lock()
-		handler, ok := c.handlers[event.Type]
-		c.mu.Unlock()
-
-		if !ok {
-			c.cfg.Logger.Debug("no handler", "type", event.Type, "topic", topic)
-			_ = reader.CommitMessages(ctx, msg)
-			continue
-		}
-
-		// Schema validation: reject payloads that don't match the taxonomy.
-		if !c.cfg.DisableSchemaValidation {
-			if err := c.validateMessagePayload(event); err != nil {
-				c.cfg.Logger.Error("schema validation failed",
-					"topic", topic,
-					"offset", msg.Offset,
-					"event_type", event.Type,
-					"error", err,
-				)
-				c.sendToDeadLetter(ctx, msg, event.Type, 0, fmt.Errorf("schema_validation_failed: %w", err))
-				c.recordFailure(topic, event.Type, msg.Offset)
-				_ = reader.CommitMessages(ctx, msg)
-				continue
-			}
-		}
-
-		// Retry loop — commit only on success.
-		var lastErr error
-		handled := false
-		for attempt := 1; attempt <= c.cfg.MaxRetries; attempt++ {
-			if err := handler(ctx, event); err != nil {
-				lastErr = err
-				c.cfg.Logger.Warn("handler failed",
-					"event_type", event.Type,
-					"event_id", event.ID,
-					"attempt", attempt,
-					"max_retries", c.cfg.MaxRetries,
-					"error", err,
-				)
-				continue
-			}
-			handled = true
-			break
-		}
-
-		if !handled {
-			c.sendToDeadLetter(ctx, msg, event.Type, c.cfg.MaxRetries, lastErr)
-			c.recordFailure(topic, event.Type, msg.Offset)
-		} else {
-			c.recordSuccess(topic, event.Type, msg.Offset)
-		}
-
-		// Commit after success OR after dead-lettering to avoid infinite retry loops.
+		// Commit after success OR after dead-lettering to avoid infinite retry
+		// loops — every branch of handleFetchedMessage is terminal.
 		if err := reader.CommitMessages(ctx, msg); err != nil {
 			c.cfg.Logger.Error("commit failed",
-				"topic", topic,
+				"topic", msg.Topic,
 				"offset", msg.Offset,
 				"error", err,
 			)
 		}
 	}
+}
+
+// handleFetchedMessage decodes, dispatches, validates, retries, dead-letters
+// and records health for a single fetched message. It never commits — the
+// caller commits after this returns. The message's own Topic is used for
+// health, DLQ, and log fields (each message carries its real topic under a
+// GroupTopics reader). This is the unit-test seam: no reader required.
+func (c *KafkaConsumer) handleFetchedMessage(ctx context.Context, msg kafka.Message) {
+	lag := msg.HighWaterMark - msg.Offset - 1
+	if lag < 0 {
+		lag = 0
+	}
+
+	var event CloudEvent
+	if err := json.Unmarshal(msg.Value, &event); err != nil {
+		c.cfg.Logger.Error("unmarshal failed",
+			"topic", msg.Topic,
+			"offset", msg.Offset,
+			"error", err,
+		)
+		c.sendToDeadLetter(ctx, msg, "", 0, fmt.Errorf("unmarshal: %w", err))
+		return
+	}
+
+	c.mu.Lock()
+	handler, ok := c.handlers[event.Type]
+	c.mu.Unlock()
+
+	if !ok {
+		c.cfg.Logger.Debug("no handler", "type", event.Type, "topic", msg.Topic)
+		return
+	}
+
+	// Schema validation: reject payloads that don't match the taxonomy.
+	if !c.cfg.DisableSchemaValidation {
+		if err := c.validateMessagePayload(event); err != nil {
+			c.cfg.Logger.Error("schema validation failed",
+				"topic", msg.Topic,
+				"offset", msg.Offset,
+				"event_type", event.Type,
+				"error", err,
+			)
+			c.sendToDeadLetter(ctx, msg, event.Type, 0, fmt.Errorf("schema_validation_failed: %w", err))
+			c.recordFailure(msg.Topic, event.Type, msg.Offset, lag)
+			return
+		}
+	}
+
+	// Retry loop — record success/failure only when terminal.
+	var lastErr error
+	handled := false
+	for attempt := 1; attempt <= c.cfg.MaxRetries; attempt++ {
+		if err := handler(ctx, event); err != nil {
+			lastErr = err
+			c.cfg.Logger.Warn("handler failed",
+				"event_type", event.Type,
+				"event_id", event.ID,
+				"attempt", attempt,
+				"max_retries", c.cfg.MaxRetries,
+				"error", err,
+			)
+			continue
+		}
+		handled = true
+		break
+	}
+
+	if !handled {
+		c.sendToDeadLetter(ctx, msg, event.Type, c.cfg.MaxRetries, lastErr)
+		c.recordFailure(msg.Topic, event.Type, msg.Offset, lag)
+	} else {
+		c.recordSuccess(msg.Topic, event.Type, msg.Offset, lag)
+	}
+}
+
+// assertAssignment polls the group coordinator until the consumer group has at
+// least one partition assigned, or the deadline elapses with zero — in which
+// case it records a fatal error (see AssignmentError) and logs it loud. It
+// short-circuits to success the moment any message has been processed. It is
+// an unexported method so tests can drive it directly without a real broker.
+func (c *KafkaConsumer) assertAssignment(ctx context.Context) {
+	deadline := time.Now().Add(c.cfg.AssignmentDeadline)
+	ticker := time.NewTicker(c.cfg.AssignmentPollInterval)
+	defer ticker.Stop()
+
+	for {
+		// Short-circuit: if any message has already been recorded, the group
+		// is clearly assigned and fetching — no need to describe.
+		c.healthMu.RLock()
+		flowing := len(c.health) > 0
+		c.healthMu.RUnlock()
+		if flowing {
+			c.cfg.Logger.Info("kafka consumer group is fetching messages (assignment confirmed)",
+				"group", c.cfg.GroupID, "topics", c.cfg.Topics)
+			return
+		}
+
+		if c.describer != nil {
+			n, err := c.assignedPartitionCount(ctx)
+			if err != nil {
+				// Broker/coordinator may be warming up; keep polling.
+				c.cfg.Logger.Debug("describe consumer group failed, will retry",
+					"group", c.cfg.GroupID, "error", err)
+			} else if n > 0 {
+				c.cfg.Logger.Info("kafka consumer group received partition assignment",
+					"group", c.cfg.GroupID, "topics", c.cfg.Topics, "partitions", n)
+				return
+			}
+		}
+
+		if !time.Now().Before(deadline) {
+			err := fmt.Errorf(
+				"kafka consumer group %q is stable with ZERO partitions assigned after %s for topics %v: "+
+					"messages will never be fetched — check that partitions exist and no other member is monopolizing them",
+				c.cfg.GroupID, c.cfg.AssignmentDeadline, c.cfg.Topics)
+			c.assignErr.Store(&err)
+			c.cfg.Logger.Error("kafka consumer group received no partition assignment before deadline",
+				"group", c.cfg.GroupID,
+				"topics", c.cfg.Topics,
+				"deadline", c.cfg.AssignmentDeadline,
+				"error", err,
+			)
+			return
+		}
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+// assignedPartitionCount describes the consumer group and totals the partitions
+// assigned across all members. The segmentio client routes DescribeGroups to
+// the group coordinator automatically (protocol.GroupMessage → findcoordinator,
+// transport.go:684-696), so any broker address works.
+func (c *KafkaConsumer) assignedPartitionCount(ctx context.Context) (int, error) {
+	resp, err := c.describer.DescribeGroups(ctx, &kafka.DescribeGroupsRequest{
+		GroupIDs: []string{c.cfg.GroupID},
+	})
+	if err != nil {
+		return 0, err
+	}
+	total := 0
+	for _, g := range resp.Groups {
+		if g.GroupID != c.cfg.GroupID {
+			continue
+		}
+		if g.Error != nil {
+			return 0, g.Error
+		}
+		for _, m := range g.Members {
+			for _, t := range m.MemberAssignments.Topics {
+				total += len(t.Partitions)
+			}
+		}
+	}
+	return total, nil
 }
 
 func (c *KafkaConsumer) sendToDeadLetter(ctx context.Context, msg kafka.Message, eventType string, retryCount int, lastErr error) {
@@ -440,7 +589,7 @@ func (c *KafkaConsumer) validateMessagePayload(event CloudEvent) error {
 	return ValidateRawPayload(event.Type, generic)
 }
 
-func (c *KafkaConsumer) recordSuccess(topic, eventType string, offset int64) {
+func (c *KafkaConsumer) recordSuccess(topic, eventType string, offset, lag int64) {
 	c.healthMu.Lock()
 	h, ok := c.health[topic]
 	if !ok {
@@ -451,10 +600,11 @@ func (c *KafkaConsumer) recordSuccess(topic, eventType string, offset int64) {
 	h.LastEventType = eventType
 	h.LastProcessed = time.Now().UTC()
 	h.MessagesOK++
+	h.Lag = lag
 	c.healthMu.Unlock()
 }
 
-func (c *KafkaConsumer) recordFailure(topic, eventType string, offset int64) {
+func (c *KafkaConsumer) recordFailure(topic, eventType string, offset, lag int64) {
 	c.healthMu.Lock()
 	h, ok := c.health[topic]
 	if !ok {
@@ -465,24 +615,22 @@ func (c *KafkaConsumer) recordFailure(topic, eventType string, offset int64) {
 	h.LastEventType = eventType
 	h.LastProcessed = time.Now().UTC()
 	h.MessagesFailed++
+	h.Lag = lag
 	c.healthMu.Unlock()
 }
 
-// Close closes all readers.
+// Close closes the reader.
 func (c *KafkaConsumer) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	var errs []error
-	for _, reader := range c.readers {
-		if err := reader.Close(); err != nil {
-			errs = append(errs, err)
-		}
+	if c.reader == nil {
+		return nil
 	}
-	c.readers = nil
-
-	if len(errs) > 0 {
-		return fmt.Errorf("kafka close errors: %v", errs)
+	err := c.reader.Close()
+	c.reader = nil
+	if err != nil {
+		return fmt.Errorf("kafka close error: %w", err)
 	}
 	return nil
 }

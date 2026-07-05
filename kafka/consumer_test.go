@@ -139,8 +139,8 @@ func TestConsumer_Close(t *testing.T) {
 
 // TestConsumer_SchemaValidation_RoutesToDLQ makes sure payloads that
 // don't match the registered taxonomy land in the DLQ instead of the
-// handler. Exercises the validateMessagePayload hook added to
-// consumeTopic for §A6.
+// handler. Exercises the validateMessagePayload hook used by
+// handleFetchedMessage for §A6.
 func TestConsumer_SchemaValidation_RoutesToDLQ(t *testing.T) {
 	// Register a known event with a schema that requires `user_id`.
 	if err := RegisterExtensionEvent(RegisteredEvent{

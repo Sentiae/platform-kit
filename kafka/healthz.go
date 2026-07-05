@@ -8,11 +8,12 @@ import (
 
 // HealthzResponse is the JSON body returned by HealthzHandler.
 type HealthzResponse struct {
-	Status          string        `json:"status"`           // "ok" or "degraded"
-	Service         string        `json:"service"`          // producer source name (if set)
-	RegisteredTypes int           `json:"registered_types"` // total count in the taxonomy
-	Subscriptions   []string      `json:"subscriptions"`    // event types this consumer listens to
-	Topics          []topicHealth `json:"topics"`           // per-topic lag + last processed
+	Status          string        `json:"status"`                     // "ok" or "degraded"
+	Service         string        `json:"service"`                    // producer source name (if set)
+	RegisteredTypes int           `json:"registered_types"`           // total count in the taxonomy
+	Subscriptions   []string      `json:"subscriptions"`              // event types this consumer listens to
+	Topics          []topicHealth `json:"topics"`                     // per-topic lag + last processed
+	AssignmentError string        `json:"assignment_error,omitempty"` // set when the group got zero partitions
 	GeneratedAt     time.Time     `json:"generated_at"`
 }
 
@@ -36,6 +37,12 @@ func HealthzHandler(consumer *KafkaConsumer, service string) http.Handler {
 		if consumer != nil {
 			resp.Subscriptions = consumer.SubscribedTypes()
 			resp.Topics = consumer.Health()
+
+			// A group stuck with zero partitions never fetches — hard degrade.
+			if err := consumer.AssignmentError(); err != nil {
+				resp.AssignmentError = err.Error()
+				resp.Status = "degraded"
+			}
 
 			// Degrade if any topic has >0 failures since last reset, or lag
 			// beyond a basic threshold. This is a conservative floor — callers

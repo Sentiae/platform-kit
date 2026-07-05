@@ -359,6 +359,24 @@ const (
 const (
 	EventCatalogComponentLifecycleChanged = "catalog.component.lifecycle_changed"
 	EventCatalogArchApplied               = "catalog.arch.applied"
+
+	// D-052 successors of the extracted legacy ops.service.* /
+	// ops.ownership.changed / ops.component.body_edited events. catalog
+	// dual-emits both the legacy type and its successor during the migration
+	// window (one outbox row each, same payload, same transaction); the legacy
+	// emit drops once every consumer has cut over.
+	//
+	// Wire topics (topicFromEventType = sentiae.<domain>.<resource>):
+	// catalog.component.created/updated/deleted/discovered/body_edited all share
+	// sentiae.catalog.component — deliberate reuse of one component-aggregate
+	// topic, so per-component-key ordering is preserved across every component
+	// event. catalog.ownership.changed rides sentiae.catalog.ownership.
+	EventCatalogComponentCreated    = "catalog.component.created"
+	EventCatalogComponentUpdated    = "catalog.component.updated"
+	EventCatalogComponentDeleted    = "catalog.component.deleted"
+	EventCatalogComponentDiscovered = "catalog.component.discovered"
+	EventCatalogOwnershipChanged    = "catalog.ownership.changed"
+	EventCatalogComponentBodyEdited = "catalog.component.body_edited"
 )
 
 // ---------- Deployment domain (deployment-service flow/graph runs) -------
@@ -1177,6 +1195,22 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("catalog.component.lifecycle_changed", []string{"component_id", "from", "to"}, `"component_id":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}`)},
 	{EventCatalogArchApplied, "catalog", "An architecture graph was applied onto a component", "catalog-service",
 		dataSchema("catalog.arch.applied", []string{"graph_id"}, `"graph_id":{"type":"string"},"component_ids":{"type":"array"},"feature_component_pairs":{"type":"array"}`)},
+
+	// D-052 successors of the legacy ops.service.* / ops.ownership.changed /
+	// ops.component.body_edited events (dual-emitted by catalog during the
+	// migration window). Payloads mirror the legacy entries verbatim.
+	{EventCatalogComponentCreated, "catalog", "A component (service catalog entry) was created", "catalog-service",
+		dataSchema("catalog.component.created", nil, `"name":{"type":"string"},"slug":{"type":"string"},"lifecycle":{"type":"string"},"discovered_from":{"type":"string"}`)},
+	{EventCatalogComponentUpdated, "catalog", "A component (service catalog entry) was updated", "catalog-service",
+		dataSchema("catalog.component.updated", nil, `"name":{"type":"string"},"slug":{"type":"string"},"lifecycle":{"type":"string"},"discovered_from":{"type":"string"}`)},
+	{EventCatalogComponentDeleted, "catalog", "A component (service catalog entry) was deleted", "catalog-service",
+		dataSchema("catalog.component.deleted", nil, `"name":{"type":"string"},"slug":{"type":"string"},"lifecycle":{"type":"string"},"discovered_from":{"type":"string"}`)},
+	{EventCatalogComponentDiscovered, "catalog", "A component (service catalog entry) was discovered", "catalog-service",
+		dataSchema("catalog.component.discovered", nil, `"name":{"type":"string"},"slug":{"type":"string"},"lifecycle":{"type":"string"},"discovered_from":{"type":"string"}`)},
+	{EventCatalogOwnershipChanged, "catalog", "A team was added to or removed from a component's owner set", "catalog-service",
+		dataSchema("catalog.ownership.changed", []string{"entity_kind", "entity_id", "team_id", "action"}, `"entity_kind":{"type":"string"},"entity_id":{"type":"string"},"team_id":{"type":"string"},"action":{"type":"string","enum":["added","removed"]},"actor":{"type":"string"}`)},
+	{EventCatalogComponentBodyEdited, "catalog", "A component's rich page-builder body was edited (coalesced per editing window); revision + collab_seq are the fact-derivation watermark", "catalog-service",
+		dataSchema("catalog.component.body_edited", []string{"revision", "collab_seq"}, `"name":{"type":"string"},"cause":{"type":"string"},"revision":{"type":"integer"},"collab_seq":{"type":"integer"}`)},
 
 	{EventCanvasRuntimeDeployed, "canvas", "Canvas runtime deployment", "canvas-service",
 		dataSchema("canvas.runtime.deployed", nil, `"canvas_id":{"type":"string"},"deployment_id":{"type":"string"}`)},

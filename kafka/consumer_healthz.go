@@ -24,11 +24,12 @@ type ConsumerLagEntry struct {
 
 // ConsumersHealthResponse is the JSON body returned by ConsumersHealthzHandler.
 type ConsumersHealthResponse struct {
-	Service       string             `json:"service"`
-	Status        string             `json:"status"` // "ok" or "degraded"
-	Subscriptions []string           `json:"subscriptions"`
-	Consumers     []ConsumerLagEntry `json:"consumers"`
-	GeneratedAt   time.Time          `json:"generated_at"`
+	Service          string             `json:"service"`
+	Status           string             `json:"status"` // "ok" or "degraded"
+	Subscriptions    []string           `json:"subscriptions"`
+	Consumers        []ConsumerLagEntry `json:"consumers"`
+	AssignmentErrors []string           `json:"assignment_errors,omitempty"` // groups stuck with zero partitions
+	GeneratedAt      time.Time          `json:"generated_at"`
 }
 
 // ConsumersHealthzHandler returns an http.Handler intended to be mounted at
@@ -65,6 +66,11 @@ func ConsumersHealthzHandler(service string, consumers ...*KafkaConsumer) http.H
 				}
 				seenSub[t] = true
 				resp.Subscriptions = append(resp.Subscriptions, t)
+			}
+			// A group stuck with zero partitions never fetches — hard degrade.
+			if err := c.AssignmentError(); err != nil {
+				resp.AssignmentErrors = append(resp.AssignmentErrors, err.Error())
+				resp.Status = "degraded"
 			}
 			for _, h := range c.Health() {
 				entry := ConsumerLagEntry{
