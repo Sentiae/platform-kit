@@ -377,6 +377,31 @@ const (
 	EventCatalogComponentDiscovered = "catalog.component.discovered"
 	EventCatalogOwnershipChanged    = "catalog.ownership.changed"
 	EventCatalogComponentBodyEdited = "catalog.component.body_edited"
+
+	// EventCatalogComponentCodeChanged is catalog's ENRICHED re-emit of a source
+	// change (D-059): catalog resolves the producer's repo_ref to a Component via
+	// its RepoBinding index and re-emits with the component_id attached, so no
+	// other service ever implements repo→component resolution (I11 — catalog owns
+	// the system model). Fed by codegen.build.completed today and vcs.code.changed
+	// when the vcs plane starts emitting it; deduped on the build-state commit
+	// pointer (same commit twice → one emit). Rides the shared
+	// sentiae.catalog.component aggregate topic (per-component ordering).
+	EventCatalogComponentCodeChanged = "catalog.component.code_changed"
+)
+
+// ---------- VCS domain (canonical vcs.* family — event-catalog.md) --------
+//
+// The canonical successor family of the legacy sentiae.git.* events below.
+// Producer: git-service (→ vcs-service). NOTE: git-service does not emit these
+// yet (its outbox is a T-VCS deliverable); the constants exist so consumers
+// (catalog's RepoBinding resolver, codegen Sync) subscribe to the frozen names.
+
+const (
+	// EventVcsCodeChanged fires when a commit lands on a repository branch.
+	// Wire topic: sentiae.vcs.code. Payload {repo_ref, change_id, commit_sha} —
+	// deliberately NO component_id: the vcs plane does not know the system model
+	// (I11); catalog resolves repo_ref via its RepoBinding index (D-059).
+	EventVcsCodeChanged = "vcs.code.changed"
 )
 
 // ---------- Deployment domain (deployment-service flow/graph runs) -------
@@ -1178,7 +1203,7 @@ var registeredEvents = []RegisteredEvent{
 	{EventCanvasCodegenCompleted, "canvas", "Canvas code generation completed", "canvas-service",
 		dataSchema("canvas.codegen.completed", nil, `"canvas_id":{"type":"string"},"language":{"type":"string"},"files":{"type":"integer"}`)},
 	{EventCodegenBuildCompleted, "codegen", "codegen committed a compiling repo (Scaffold persist)", "codegen-service",
-		dataSchema("codegen.build.completed", []string{"component_id", "repo_ref", "commit_sha", "stack", "compiled"}, `"component_id":{"type":"string"},"repo_ref":{"type":"string"},"commit_sha":{"type":"string"},"stack":{"type":"string"},"compiled":{"type":"boolean"}`)},
+		dataSchema("codegen.build.completed", []string{"component_id", "repo_ref", "commit_sha", "stack", "compiled"}, `"component_id":{"type":"string"},"repo_ref":{"type":"string"},"commit_sha":{"type":"string"},"change_id":{"type":"string"},"stack":{"type":"string"},"compiled":{"type":"boolean"}`)},
 
 	// Delivery — the build→deploy→operate spine (consumed by catalog).
 	{EventDeliveryImageBuilt, "delivery", "delivery built a container image for a component", "delivery-service",
@@ -1211,6 +1236,13 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("catalog.ownership.changed", []string{"entity_kind", "entity_id", "team_id", "action"}, `"entity_kind":{"type":"string"},"entity_id":{"type":"string"},"team_id":{"type":"string"},"action":{"type":"string","enum":["added","removed"]},"actor":{"type":"string"}`)},
 	{EventCatalogComponentBodyEdited, "catalog", "A component's rich page-builder body was edited (coalesced per editing window); revision + collab_seq are the fact-derivation watermark", "catalog-service",
 		dataSchema("catalog.component.body_edited", []string{"revision", "collab_seq"}, `"name":{"type":"string"},"cause":{"type":"string"},"revision":{"type":"integer"},"collab_seq":{"type":"integer"}`)},
+	{EventCatalogComponentCodeChanged, "catalog", "A component's source changed (repo_ref resolved to the component via the RepoBinding index, D-059) — the enriched re-emit no other service resolves repos for", "catalog-service",
+		dataSchema("catalog.component.code_changed", []string{"component_id", "repo_ref", "commit_sha"}, `"component_id":{"type":"string"},"repo_ref":{"type":"string"},"commit_sha":{"type":"string"},"change_id":{"type":"string"}`)},
+
+	// VCS — canonical vcs.* family (producer git-service→vcs-service; not yet
+	// emitted, T-VCS outbox pending — consumers subscribe to the frozen name).
+	{EventVcsCodeChanged, "vcs", "A commit landed on a repository branch (repo_ref only — catalog resolves the component via RepoBinding, D-059)", "git-service",
+		dataSchema("vcs.code.changed", []string{"repo_ref", "commit_sha"}, `"repo_ref":{"type":"string"},"change_id":{"type":"string"},"commit_sha":{"type":"string"}`)},
 
 	{EventCanvasRuntimeDeployed, "canvas", "Canvas runtime deployment", "canvas-service",
 		dataSchema("canvas.runtime.deployed", nil, `"canvas_id":{"type":"string"},"deployment_id":{"type":"string"}`)},
