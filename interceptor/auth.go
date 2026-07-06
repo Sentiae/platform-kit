@@ -78,24 +78,42 @@ func StreamAuth(cfg AuthConfig) grpc.StreamServerInterceptor {
 	}
 }
 
+// authenticate establishes every principal presented on the request and
+// rejects only when none is established. Credentials are layered, not
+// mutually exclusive: a valid x-api-key marks the caller as a trusted
+// service, and a present Bearer is still validated on top of it so the
+// user identity is captured. A present-but-invalid credential is
+// fail-closed — it rejects the whole request.
+//
+// When TokenValidator is nil a present Bearer is ignored (never parsed),
+// preserving the exact behavior of api-key-only services. When
+// APIKeyValidator is nil the Bearer path is the only one.
 func authenticate(ctx context.Context, cfg AuthConfig, l *slog.Logger) (context.Context, error) {
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return ctx, status.Error(codes.Unauthenticated, "missing metadata")
 	}
 
-	// Try API key first (service-to-service).
+	established := false
+
+	// 1. Service principal — a valid x-api-key marks a trusted service caller.
 	if cfg.APIKeyValidator != nil {
 		if keys := md.Get("x-api-key"); len(keys) > 0 {
 			if err := cfg.APIKeyValidator.Validate(ctx, keys[0]); err != nil {
 				l.WarnContext(ctx, "api key validation failed", "error", err)
 				return ctx, status.Error(codes.Unauthenticated, "invalid api key")
 			}
-			return ctx, nil
+			svc := "unknown"
+			if n := md.Get("x-service-name"); len(n) > 0 && n[0] != "" {
+				svc = n[0]
+			}
+			ctx = context.WithValue(ctx, serviceCallerCtxKey{}, svc)
+			established = true
 		}
 	}
 
-	// Try JWT Bearer token.
+	// 2. User principal — validate a present Bearer even when the api-key
+	// already passed, so the user identity is layered on top.
 	if cfg.TokenValidator != nil {
 		if auths := md.Get("authorization"); len(auths) > 0 {
 			parts := strings.SplitN(auths[0], " ", 2)
@@ -111,20 +129,34 @@ func authenticate(ctx context.Context, cfg AuthConfig, l *slog.Logger) (context.
 
 			ctx = context.WithValue(ctx, logger.UserIDKey, claims.Subject)
 			ctx = context.WithValue(ctx, claimsCtxKey{}, claims)
-			return ctx, nil
+			established = true
 		}
 	}
 
-	return ctx, status.Error(codes.Unauthenticated, "no credentials provided")
+	// 3. Terminal — reject only when no principal was established.
+	if !established {
+		return ctx, status.Error(codes.Unauthenticated, "no credentials provided")
+	}
+	return ctx, nil
 }
 
 // claimsCtxKey is the unexported context key for storing parsed JWT claims in gRPC context.
 type claimsCtxKey struct{}
 
+// serviceCallerCtxKey is the unexported context key for storing the service
+// caller label established by a valid x-api-key.
+type serviceCallerCtxKey struct{}
+
 // GetClaims returns the JWT claims from the gRPC context, or zero-value Claims if not set.
 func GetClaims(ctx context.Context) (middleware.Claims, bool) {
 	c, ok := ctx.Value(claimsCtxKey{}).(middleware.Claims)
 	return c, ok
+}
+
+// GetServiceCaller returns the x-service-name label when the call presented a valid x-api-key.
+func GetServiceCaller(ctx context.Context) (string, bool) {
+	v, ok := ctx.Value(serviceCallerCtxKey{}).(string)
+	return v, ok
 }
 
 func buildSkipSet(methods []string) map[string]struct{} {

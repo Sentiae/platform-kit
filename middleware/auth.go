@@ -28,6 +28,8 @@ type Claims struct {
 	Email string
 	// Scopes is a custom "scopes" claim (e.g. ["org:<uuid>"]).
 	Scopes []string
+	// OrganizationID is the "organization_id" claim — the active org context.
+	OrganizationID string
 	// PlatformAdmin is a custom "platform_admin" boolean claim that
 	// downstream services (e.g. ops-service RequirePlatformAdmin) use
 	// to gate cross-tenant admin endpoints. Populated by identity-
@@ -111,8 +113,10 @@ type RS256Validator struct {
 // jwtClaims extends jwt.RegisteredClaims with custom fields.
 type jwtClaims struct {
 	jwt.RegisteredClaims
-	Email  string   `json:"email,omitempty"`
-	Scopes []string `json:"scopes,omitempty"`
+	Email          string   `json:"email,omitempty"`
+	Scopes         []string `json:"scopes,omitempty"`
+	OrganizationID string   `json:"organization_id,omitempty"`
+	PlatformAdmin  bool     `json:"platform_admin,omitempty"`
 }
 
 // Validate parses and validates the token, returning the extracted claims.
@@ -144,9 +148,11 @@ func (v *RS256Validator) Validate(_ context.Context, tokenString string) (Claims
 	}
 
 	return Claims{
-		Subject: parsed.Subject,
-		Issuer:  parsed.Issuer,
-		Email:   parsed.Email,
-		Scopes:  parsed.Scopes,
+		Subject:        parsed.Subject,
+		Issuer:         parsed.Issuer,
+		Email:          parsed.Email,
+		Scopes:         parsed.Scopes,
+		OrganizationID: parsed.OrganizationID,
+		PlatformAdmin:  parsed.PlatformAdmin,
 	}, nil
 }

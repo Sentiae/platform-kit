@@ -215,34 +215,115 @@ func TestUnaryAuth_InvalidAPIKey(t *testing.T) {
 	}
 }
 
-func TestUnaryAuth_APIKeyPrecedence(t *testing.T) {
-	var buf bytes.Buffer
-	l := testLogger(&buf)
+// TestUnaryAuth_LayeredCredentials exercises the layered-credential model:
+// every presented principal is established, a present-but-invalid credential
+// fails closed, and a request with no credential is rejected. The both-headers
+// scenarios (valid + invalid Bearer alongside a valid api-key) replace the
+// removed api-key short-circuit ("precedence") behavior.
+func TestUnaryAuth_LayeredCredentials(t *testing.T) {
+	validClaims := middleware.Claims{Subject: "user-123", Email: "u@example.com"}
 
-	// When both validators are present and both headers exist,
-	// API key should be checked first.
-	interceptor := UnaryAuth(AuthConfig{
-		TokenValidator:  &fakeTokenValidator{err: errors.New("should not be called")},
-		APIKeyValidator: &fakeAPIKeyValidator{validKey: "secret-key"},
-		Logger:          l,
-	})
-
-	handler := func(ctx context.Context, req any) (any, error) {
-		return "ok", nil
+	tests := []struct {
+		name              string
+		tokenValidator    middleware.TokenValidator
+		apiKeyValidator   APIKeyValidator
+		md                map[string]string
+		wantErr           bool
+		wantCode          codes.Code
+		wantServiceCaller string // "" means expect none
+		wantClaims        bool
+	}{
+		{
+			name:              "api-key only, no bearer, succeeds",
+			apiKeyValidator:   &fakeAPIKeyValidator{validKey: "secret-key"},
+			md:                map[string]string{"x-api-key": "secret-key", "x-service-name": "codegen"},
+			wantServiceCaller: "codegen",
+		},
+		{
+			name:              "api-key valid and bearer valid, both established",
+			tokenValidator:    &fakeTokenValidator{claims: validClaims},
+			apiKeyValidator:   &fakeAPIKeyValidator{validKey: "secret-key"},
+			md:                map[string]string{"x-api-key": "secret-key", "x-service-name": "eve", "authorization": "Bearer good"},
+			wantServiceCaller: "eve",
+			wantClaims:        true,
+		},
+		{
+			name:            "api-key valid but bearer invalid, rejected",
+			tokenValidator:  &fakeTokenValidator{err: errors.New("expired")},
+			apiKeyValidator: &fakeAPIKeyValidator{validKey: "secret-key"},
+			md:              map[string]string{"x-api-key": "secret-key", "authorization": "Bearer bad"},
+			wantErr:         true,
+			wantCode:        codes.Unauthenticated,
+		},
+		{
+			name:              "token validator nil, present bearer ignored, api-key succeeds",
+			tokenValidator:    nil,
+			apiKeyValidator:   &fakeAPIKeyValidator{validKey: "secret-key"},
+			md:                map[string]string{"x-api-key": "secret-key", "authorization": "Bearer ignored"},
+			wantServiceCaller: "unknown",
+		},
+		{
+			name:            "no credentials, unauthenticated",
+			tokenValidator:  &fakeTokenValidator{claims: validClaims},
+			apiKeyValidator: &fakeAPIKeyValidator{validKey: "secret-key"},
+			md:              map[string]string{"unrelated": "x"},
+			wantErr:         true,
+			wantCode:        codes.Unauthenticated,
+		},
 	}
 
-	md := metadata.New(map[string]string{
-		"x-api-key":     "secret-key",
-		"authorization": "Bearer some-token",
-	})
-	ctx := metadata.NewIncomingContext(context.Background(), md)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := testLogger(&buf)
+			ic := UnaryAuth(AuthConfig{
+				TokenValidator:  tt.tokenValidator,
+				APIKeyValidator: tt.apiKeyValidator,
+				Logger:          l,
+			})
 
-	resp, err := interceptor(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test/Auth"}, handler)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if resp != "ok" {
-		t.Fatalf("expected 'ok', got %v", resp)
+			var capturedCtx context.Context
+			handler := func(ctx context.Context, req any) (any, error) {
+				capturedCtx = ctx
+				return "ok", nil
+			}
+
+			md := metadata.New(tt.md)
+			ctx := metadata.NewIncomingContext(context.Background(), md)
+
+			resp, err := ic(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test/Auth"}, handler)
+
+			if tt.wantErr {
+				if err == nil {
+					t.Fatal("expected error, got nil")
+				}
+				st, _ := status.FromError(err)
+				if st.Code() != tt.wantCode {
+					t.Fatalf("expected code %v, got %v", tt.wantCode, st.Code())
+				}
+				return
+			}
+
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if resp != "ok" {
+				t.Fatalf("expected 'ok', got %v", resp)
+			}
+
+			svc, ok := GetServiceCaller(capturedCtx)
+			if tt.wantServiceCaller == "" {
+				if ok {
+					t.Fatalf("expected no service caller, got %q", svc)
+				}
+			} else if !ok || svc != tt.wantServiceCaller {
+				t.Fatalf("expected service caller %q, got %q (ok=%v)", tt.wantServiceCaller, svc, ok)
+			}
+
+			if _, hasClaims := GetClaims(capturedCtx); hasClaims != tt.wantClaims {
+				t.Fatalf("expected claims present=%v, got %v", tt.wantClaims, hasClaims)
+			}
+		})
 	}
 }
 
