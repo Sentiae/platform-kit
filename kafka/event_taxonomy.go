@@ -348,6 +348,7 @@ const (
 	EventDeliveryImageBuilt        = "delivery.image.built"
 	EventDeliveryTestCompleted     = "delivery.test.completed"
 	EventDeliveryDeployCompleted   = "delivery.deploy.completed"
+	EventDeliveryDeployVerified    = "delivery.deploy.verified"
 	EventDeliveryRetargetCompleted = "delivery.retarget.completed"
 )
 
@@ -1212,6 +1213,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("delivery.test.completed", []string{"component_id"}, `"component_id":{"type":"string"},"image_ref":{"type":"object"},"passed":{"type":"boolean"},"coverage":{"type":"number"},"report_ref":{"type":"string"}`)},
 	{EventDeliveryDeployCompleted, "delivery", "delivery finished deploying a component to an environment", "delivery-service",
 		dataSchema("delivery.deploy.completed", []string{"component_id", "env"}, `"component_id":{"type":"string"},"env":{"type":"string"},"target_class":{"type":"string"},"image_ref":{"type":"object"},"url":{"type":"string"},"deploy_id":{"type":"string"}`)},
+	{EventDeliveryDeployVerified, "delivery", "delivery's post-deploy health verification passed or failed (drives saga completion / auto-rollback)", "delivery-service",
+		dataSchema("delivery.deploy.verified", []string{"deploy_id"}, `"deploy_id":{"type":"string"},"healthy":{"type":"boolean"}`)},
 	{EventDeliveryRetargetCompleted, "delivery", "delivery retargeted a component×environment to a new class", "delivery-service",
 		dataSchema("delivery.retarget.completed", []string{"component_id", "env"}, `"component_id":{"type":"string"},"env":{"type":"string"},"from_target":{"type":"string"},"to_target":{"type":"string"}`)},
 
@@ -1483,7 +1486,10 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("foundry.agent.failed", []string{"agent", "error"}, `"agent":{"type":"string"},"error":{"type":"string"}`)},
 
 	{EventFoundryApprovalRequested, "foundry", "An approval was requested", "foundry-service",
-		dataSchema("foundry.approval.requested", []string{"action"}, `"action":{"type":"string"},"requester":{"type":"string"}`)},
+		// Schema = the real ApprovalNotification wire shape (foundry approval_notifier.go);
+		// the previous {action,requester} schema never matched the payload, so every
+		// P10 fanout publish failed validation silently.
+		dataSchema("foundry.approval.requested", []string{"approval_id", "operation_name"}, `"approval_id":{"type":"string"},"org_id":{"type":"string"},"requested_by":{"type":"string"},"approver_id":{"type":"string"},"operation_name":{"type":"string"},"summary":{"type":"string"},"autonomous":{"type":"boolean"},"ref":{"type":"string"}`)},
 	{EventFoundryApprovalGranted, "foundry", "An approval was granted", "foundry-service",
 		dataSchema("foundry.approval.granted", []string{"approval_id", "approver"}, `"approval_id":{"type":"string"},"approver":{"type":"string"}`)},
 	{EventFoundryApprovalRejected, "foundry", "An approval was rejected", "foundry-service",
