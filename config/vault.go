@@ -202,6 +202,22 @@ func (c *VaultClient) Raw() *vault.Client { return c.client }
 // (e.g. tests) that need cleanup without changing their call-sites.
 func (c *VaultClient) Close() error { return nil }
 
+// envOrFile returns the value of the environment variable named name when it
+// is non-empty. Otherwise, if the companion variable name+"_FILE" points at a
+// readable file, it returns that file's trimmed contents (the Docker-secrets
+// convention). If neither yields a value it returns "".
+func envOrFile(name string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	if path := os.Getenv(name + "_FILE"); path != "" {
+		if b, err := os.ReadFile(path); err == nil {
+			return strings.TrimSpace(string(b))
+		}
+	}
+	return ""
+}
+
 // NewFromEnv constructs a VaultClient from standard environment variables.
 // It inspects VAULT_AUTH_MODE to decide which credential env vars are
 // required:
@@ -213,6 +229,11 @@ func (c *VaultClient) Close() error { return nil }
 //	VAULT_APPROLE_ROLE_ID + VAULT_APPROLE_SECRET_ID   approle mode.
 //	VAULT_K8S_ROLE (+ VAULT_K8S_TOKEN_PATH)            kubernetes mode.
 //	VAULT_KV_MOUNT        optional — KV v2 mount path (default: "secret").
+//
+// The credential vars VAULT_TOKEN, VAULT_APPROLE_ROLE_ID and
+// VAULT_APPROLE_SECRET_ID each also accept a "<NAME>_FILE" variant that names
+// a file whose trimmed contents supply the value (the Docker-secrets
+// convention). The direct env var wins when both are set.
 func NewFromEnv(ctx context.Context) (*VaultClient, error) {
 	addr := os.Getenv("VAULT_ADDR")
 	if addr == "" {
@@ -222,9 +243,9 @@ func NewFromEnv(ctx context.Context) (*VaultClient, error) {
 		Address:    addr,
 		Namespace:  os.Getenv("VAULT_NAMESPACE"),
 		AuthMode:   VaultAuthMode(strings.ToLower(os.Getenv("VAULT_AUTH_MODE"))),
-		Token:      os.Getenv("VAULT_TOKEN"),
-		RoleID:     os.Getenv("VAULT_APPROLE_ROLE_ID"),
-		SecretID:   os.Getenv("VAULT_APPROLE_SECRET_ID"),
+		Token:      envOrFile("VAULT_TOKEN"),
+		RoleID:     envOrFile("VAULT_APPROLE_ROLE_ID"),
+		SecretID:   envOrFile("VAULT_APPROLE_SECRET_ID"),
 		K8sRole:    os.Getenv("VAULT_K8S_ROLE"),
 		K8sJWTPath: os.Getenv("VAULT_K8S_TOKEN_PATH"),
 		MountPath:  os.Getenv("VAULT_KV_MOUNT"),
