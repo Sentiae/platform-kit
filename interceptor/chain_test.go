@@ -13,12 +13,12 @@ func TestNewChain_MinimalConfig(t *testing.T) {
 
 	unary, stream := NewChain(Config{Logger: l})
 
-	// Minimal chain: Recovery + Logging = 2 each.
-	if len(unary) != 2 {
-		t.Fatalf("expected 2 unary interceptors, got %d", len(unary))
+	// Minimal chain: Recovery + Logging + SVID = 3 each.
+	if len(unary) != 3 {
+		t.Fatalf("expected 3 unary interceptors, got %d", len(unary))
 	}
-	if len(stream) != 2 {
-		t.Fatalf("expected 2 stream interceptors, got %d", len(stream))
+	if len(stream) != 3 {
+		t.Fatalf("expected 3 stream interceptors, got %d", len(stream))
 	}
 }
 
@@ -29,12 +29,12 @@ func TestNewChain_WithMetrics(t *testing.T) {
 	m := &InMemoryMetrics{}
 	unary, stream := NewChain(Config{Logger: l, Metrics: m})
 
-	// Recovery + Logging + Metrics = 3 each.
-	if len(unary) != 3 {
-		t.Fatalf("expected 3 unary interceptors, got %d", len(unary))
+	// Recovery + Logging + Metrics + SVID = 4 each.
+	if len(unary) != 4 {
+		t.Fatalf("expected 4 unary interceptors, got %d", len(unary))
 	}
-	if len(stream) != 3 {
-		t.Fatalf("expected 3 stream interceptors, got %d", len(stream))
+	if len(stream) != 4 {
+		t.Fatalf("expected 4 stream interceptors, got %d", len(stream))
 	}
 }
 
@@ -51,12 +51,12 @@ func TestNewChain_WithAuth(t *testing.T) {
 		},
 	})
 
-	// Recovery + Logging + Auth = 3 each.
-	if len(unary) != 3 {
-		t.Fatalf("expected 3 unary interceptors, got %d", len(unary))
+	// Recovery + Logging + SVID + Auth = 4 each.
+	if len(unary) != 4 {
+		t.Fatalf("expected 4 unary interceptors, got %d", len(unary))
 	}
-	if len(stream) != 3 {
-		t.Fatalf("expected 3 stream interceptors, got %d", len(stream))
+	if len(stream) != 4 {
+		t.Fatalf("expected 4 stream interceptors, got %d", len(stream))
 	}
 }
 
@@ -75,22 +75,22 @@ func TestNewChain_FullConfig(t *testing.T) {
 		},
 	})
 
-	// Recovery + Logging + Metrics + Auth = 4 each.
-	if len(unary) != 4 {
-		t.Fatalf("expected 4 unary interceptors, got %d", len(unary))
+	// Recovery + Logging + Metrics + SVID + Auth = 5 each.
+	if len(unary) != 5 {
+		t.Fatalf("expected 5 unary interceptors, got %d", len(unary))
 	}
-	if len(stream) != 4 {
-		t.Fatalf("expected 4 stream interceptors, got %d", len(stream))
+	if len(stream) != 5 {
+		t.Fatalf("expected 5 stream interceptors, got %d", len(stream))
 	}
 }
 
 func TestNewChain_NilLoggerUsesDefault(t *testing.T) {
-	// Should not panic with nil logger.
+	// Should not panic with nil logger. Recovery + Logging + SVID = 3 each.
 	unary, stream := NewChain(Config{})
-	if len(unary) != 2 {
-		t.Fatalf("expected 2 unary interceptors, got %d", len(unary))
+	if len(unary) != 3 {
+		t.Fatalf("expected 3 unary interceptors, got %d", len(unary))
 	}
-	if len(stream) != 2 {
-		t.Fatalf("expected 2 stream interceptors, got %d", len(stream))
+	if len(stream) != 3 {
+		t.Fatalf("expected 3 stream interceptors, got %d", len(stream))
 	}
 }

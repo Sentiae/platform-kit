@@ -24,6 +24,7 @@ import (
 type Principal struct {
 	ServiceAuthed bool               // a valid x-api-key was presented
 	Service       string             // x-service-name label (attribution only; empty if none)
+	ServiceSVID   string             // peer SPIFFE ID (e.g. spiffe://sentiae.io/svc/foo); empty without mTLS
 	Claims        *middleware.Claims // non-nil when a valid user JWT was presented
 }
 
@@ -49,6 +50,13 @@ func FromContext(ctx context.Context) (Principal, bool) {
 		p.ServiceAuthed = true
 		p.Service = svc
 	}
+	// Peer mTLS SVID (from the SVID interceptor). The SPIFFE ID is a trusted,
+	// cryptographic attribution, so it derives Service; it is empty without
+	// mTLS, leaving today's behavior unchanged.
+	if id, ok := interceptor.SVIDFromContext(ctx); ok {
+		p.ServiceSVID = id.String()
+		p.Service = strings.TrimPrefix(id.Path(), "/svc/")
+	}
 	if c, ok := interceptor.GetClaims(ctx); ok {
 		cc := c
 		p.Claims = &cc
@@ -56,7 +64,7 @@ func FromContext(ctx context.Context) (Principal, bool) {
 		cc := c
 		p.Claims = &cc
 	}
-	if !p.ServiceAuthed && p.Claims == nil {
+	if !p.ServiceAuthed && p.Claims == nil && p.ServiceSVID == "" {
 		return Principal{}, false
 	}
 	return p, true
@@ -93,11 +101,20 @@ func (p Principal) OrgIDs() []uuid.UUID {
 }
 
 // CanActInOrg reports whether the principal may act in org. A user principal
-// may act when org is among its OrgIDs() or it is a platform admin. A
-// service-only principal is trusted platform code and may always act; a
-// principal with neither service auth nor user claims is denied (fail-closed).
+// may act when org is among its OrgIDs() or it is a platform admin.
+//
+// Service (non-user) principals:
+//   - Without a peer SVID (ServiceSVID == "") — today's state — the decision
+//     is byte-identical to before: an x-api-key service (ServiceAuthed) may
+//     always act; a bare principal is denied (fail-closed).
+//   - With a peer SVID, the decision is scoped by the configured ServiceGrants
+//     allow-set (default: deny). A cross-org grant lets the SVID act in any
+//     org; an ungranted SVID is denied.
 func (p Principal) CanActInOrg(org uuid.UUID) bool {
 	if p.Claims == nil {
+		if p.ServiceSVID != "" {
+			return defaultServiceGrants.Allows(p.ServiceSVID, org)
+		}
 		return p.ServiceAuthed
 	}
 	if p.Claims.PlatformAdmin {

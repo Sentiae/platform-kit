@@ -11,8 +11,9 @@
 //	    grpc.ChainStreamInterceptor(stream...),
 //	)
 //
-// The chain order is: Recovery → Logging → Metrics → Auth.
+// The chain order is: Recovery → Logging → Metrics → SVID → Auth.
 // Optional interceptors (Metrics, Auth) are only included when their config is non-nil.
+// The SVID interceptor is always installed; it is a no-op on plaintext calls.
 package interceptor
 
 import (
@@ -35,7 +36,7 @@ type Config struct {
 }
 
 // NewChain returns ordered slices of unary and stream server interceptors.
-// The order is: Recovery → Logging → Metrics → Auth.
+// The order is: Recovery → Logging → Metrics → SVID → Auth.
 func NewChain(cfg Config) ([]grpc.UnaryServerInterceptor, []grpc.StreamServerInterceptor) {
 	l := cfg.Logger
 	if l == nil {
@@ -58,6 +59,11 @@ func NewChain(cfg Config) ([]grpc.UnaryServerInterceptor, []grpc.StreamServerInt
 		unary = append(unary, UnaryMetrics(cfg.Metrics))
 		stream = append(stream, StreamMetrics(cfg.Metrics))
 	}
+
+	// SVID (always installed; no-op on plaintext). Runs before Auth so the
+	// peer SPIFFE ID is available to auth/tenant resolution downstream.
+	unary = append(unary, UnarySVID())
+	stream = append(stream, StreamSVID())
 
 	// Auth (optional, innermost).
 	if cfg.Auth != nil {
