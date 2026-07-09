@@ -126,31 +126,9 @@ var _ Resolver = (*VaultResolver)(nil)
 // is never logged; only the ref (a reference, not the secret) and the
 // principal are recorded.
 func (r *VaultResolver) Resolve(ctx context.Context, secretRef string, principal Principal) (SecretValue, error) {
-	refOrg, path, field, ok := parseTenantRef(secretRef)
-	if !ok {
-		return SecretValue{}, ErrUnscopedSecretRef
-	}
-
-	// Require an authenticated tenant: an anonymous/unscoped caller resolves
-	// nothing.
-	if principal.OrgID == "" {
-		logger.FromContext(ctx).Warn("secret resolve denied: unscoped caller",
-			"secret_ref", secretRef, "principal", principal.String())
-		return SecretValue{}, ErrCrossTenantSecret
-	}
-	principalOrg, err := uuid.Parse(principal.OrgID)
+	_, path, field, err := authorizeRef(ctx, secretRef, principal)
 	if err != nil {
-		logger.FromContext(ctx).Warn("secret resolve denied: unparseable caller org",
-			"secret_ref", secretRef, "principal", principal.String())
-		return SecretValue{}, ErrCrossTenantSecret
-	}
-
-	// I28: enforce tenant ownership WITHOUT calling Vault, so a cross-tenant
-	// probe cannot use resolution as an existence oracle.
-	if refOrg != principalOrg {
-		logger.FromContext(ctx).Warn("secret resolve denied: cross-tenant",
-			"secret_ref", secretRef, "principal", principal.String())
-		return SecretValue{}, ErrCrossTenantSecret
+		return SecretValue{}, err
 	}
 
 	val, err := r.vault.GetSecret(ctx, path, field)
@@ -168,6 +146,44 @@ func (r *VaultResolver) Resolve(ctx context.Context, secretRef string, principal
 	logger.FromContext(ctx).Info("secret resolved",
 		"secret_ref", secretRef, "principal", principal.String())
 	return SecretValue{value: val}, nil
+}
+
+// authorizeRef is the single I28 authorization codepath shared by every
+// Resolver over tenant-namespaced refs. It parses the ref, requires an
+// authenticated caller, and enforces ref.org == principal's verified org
+// BEFORE any I/O — so a cross-tenant probe cannot use resolution as an
+// existence oracle. On success it returns the ref's org plus the derived KV
+// path and field. It performs NO Vault/KV/KEK call itself; that oracle-free
+// guarantee is what every resolver depends on.
+func authorizeRef(ctx context.Context, secretRef string, principal Principal) (org uuid.UUID, path, field string, err error) {
+	refOrg, path, field, ok := parseTenantRef(secretRef)
+	if !ok {
+		return uuid.Nil, "", "", ErrUnscopedSecretRef
+	}
+
+	// Require an authenticated tenant: an anonymous/unscoped caller resolves
+	// nothing.
+	if principal.OrgID == "" {
+		logger.FromContext(ctx).Warn("secret resolve denied: unscoped caller",
+			"secret_ref", secretRef, "principal", principal.String())
+		return uuid.Nil, "", "", ErrCrossTenantSecret
+	}
+	principalOrg, err := uuid.Parse(principal.OrgID)
+	if err != nil {
+		logger.FromContext(ctx).Warn("secret resolve denied: unparseable caller org",
+			"secret_ref", secretRef, "principal", principal.String())
+		return uuid.Nil, "", "", ErrCrossTenantSecret
+	}
+
+	// I28: enforce tenant ownership WITHOUT any I/O, so a cross-tenant probe
+	// cannot use resolution as an existence oracle.
+	if refOrg != principalOrg {
+		logger.FromContext(ctx).Warn("secret resolve denied: cross-tenant",
+			"secret_ref", secretRef, "principal", principal.String())
+		return uuid.Nil, "", "", ErrCrossTenantSecret
+	}
+
+	return refOrg, path, field, nil
 }
 
 // parseRef splits "<path>#<field>". Both parts must be non-empty.
