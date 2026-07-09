@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -11,8 +12,11 @@ import (
 
 	vault "github.com/hashicorp/vault/api"
 	authk8s "github.com/hashicorp/vault/api/auth/kubernetes"
+	"github.com/spiffe/go-spiffe/v2/svid/jwtsvid"
+	"github.com/spiffe/go-spiffe/v2/workloadapi"
 
 	"github.com/sentiae/platform-kit/logger"
+	"github.com/sentiae/platform-kit/spiffe"
 )
 
 // VaultAuthMode controls how the VaultClient authenticates to the server.
@@ -27,6 +31,10 @@ const (
 	// VaultAuthKubernetes uses a Kubernetes service-account JWT (in-cluster).
 	// Requires VAULT_K8S_ROLE and (optionally) VAULT_K8S_TOKEN_PATH.
 	VaultAuthKubernetes VaultAuthMode = "kubernetes"
+	// VaultAuthSVID uses a SPIFFE JWT-SVID (audience "vault") presented to
+	// Vault's jwt auth backend — no stored secret (satisfies I33). Requires
+	// VAULT_SVID_ROLE and a running SPIFFE Workload API (SPIFFE_ENDPOINT_SOCKET).
+	VaultAuthSVID VaultAuthMode = "svid"
 )
 
 // VaultConfig holds connection + auth settings for a VaultClient.
@@ -39,13 +47,21 @@ type VaultConfig struct {
 	SecretID   string        // AppRole secret_id.
 	K8sRole    string        // Kubernetes role name.
 	K8sJWTPath string        // path to the projected SA token (default: /var/run/secrets/kubernetes.io/serviceaccount/token).
+	SVIDRole   string        // Vault jwt-backend role name (used when AuthMode == VaultAuthSVID).
 	MountPath  string        // KV v2 mount path (default: "secret").
 	Timeout    time.Duration // per-request timeout (default: 10s).
-	// AutoRenew keeps the login lease alive in the background for approle and
-	// kubernetes modes (a renewable lease). NewFromEnv defaults it to true for
-	// those modes and false for token mode (token mode has no lease). It is a
-	// no-op for token mode and for non-renewable leases.
+	// AutoRenew keeps the login lease alive in the background for approle,
+	// kubernetes and svid modes (a renewable lease). NewFromEnv defaults it to
+	// true for those modes and false for token mode (token mode has no lease).
+	// It is a no-op for token mode and for non-renewable leases.
 	AutoRenew bool
+
+	// x509Src and jwtSrc are the SPIFFE Workload API source handles for svid
+	// mode. NewVaultClient creates them; authenticate reads jwtSrc to fetch a
+	// fresh JWT-SVID on every (re-)login; Close closes both. They are nil for
+	// all non-svid modes.
+	x509Src *workloadapi.X509Source
+	jwtSrc  *workloadapi.JWTSource
 }
 
 // VaultClient is a thin wrapper over hashicorp/vault/api that focuses on the
@@ -83,8 +99,40 @@ func NewVaultClient(ctx context.Context, cfg VaultConfig) (*VaultClient, error) 
 		vcfg.Timeout = 10 * time.Second
 	}
 
+	// svid mode: bring up the SPIFFE Workload API sources before the api client
+	// so the client can verify Vault's SPIFFE server cert on https. The sources
+	// are stored on cfg (authenticate reads jwtSrc; Close closes both).
+	if cfg.AuthMode == VaultAuthSVID {
+		x509Src, err := spiffe.NewSource(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("vault: create spiffe x509 source: %w", err)
+		}
+		jwtSrc, err := spiffe.NewJWTSource(ctx)
+		if err != nil {
+			_ = x509Src.Close()
+			return nil, fmt.Errorf("vault: create spiffe jwt source: %w", err)
+		}
+		cfg.x509Src = x509Src
+		cfg.jwtSrc = jwtSrc
+		if strings.HasPrefix(strings.ToLower(cfg.Address), "https://") {
+			tr, ok := vcfg.HttpClient.Transport.(*http.Transport)
+			if !ok {
+				_ = x509Src.Close()
+				_ = jwtSrc.Close()
+				return nil, errors.New("vault: cannot wire spiffe server tls: unexpected http transport type")
+			}
+			tr.TLSClientConfig = spiffe.VaultServerTLS(x509Src)
+		}
+	}
+
 	client, err := vault.NewClient(vcfg)
 	if err != nil {
+		if cfg.x509Src != nil {
+			_ = cfg.x509Src.Close()
+		}
+		if cfg.jwtSrc != nil {
+			_ = cfg.jwtSrc.Close()
+		}
 		return nil, fmt.Errorf("vault: create client: %w", err)
 	}
 	if cfg.Namespace != "" {
@@ -93,6 +141,12 @@ func NewVaultClient(ctx context.Context, cfg VaultConfig) (*VaultClient, error) 
 
 	loginSecret, err := authenticate(ctx, client, cfg)
 	if err != nil {
+		if cfg.x509Src != nil {
+			_ = cfg.x509Src.Close()
+		}
+		if cfg.jwtSrc != nil {
+			_ = cfg.jwtSrc.Close()
+		}
 		return nil, err
 	}
 
@@ -168,6 +222,30 @@ func authenticate(ctx context.Context, client *vault.Client, cfg VaultConfig) (*
 		if secret == nil || secret.Auth == nil {
 			return nil, errors.New("vault: k8s login returned no auth info")
 		}
+		return secret, nil
+
+	case VaultAuthSVID:
+		if cfg.SVIDRole == "" {
+			return nil, errors.New("vault: svid auth requires a role")
+		}
+		if cfg.jwtSrc == nil {
+			return nil, errors.New("vault: svid auth requires a jwt source")
+		}
+		svid, err := cfg.jwtSrc.FetchJWTSVID(ctx, jwtsvid.Params{Audience: "vault"})
+		if err != nil {
+			return nil, fmt.Errorf("vault: fetch jwt-svid: %w", err)
+		}
+		secret, err := client.Logical().WriteWithContext(ctx, "auth/jwt/login", map[string]any{
+			"role": cfg.SVIDRole,
+			"jwt":  svid.Marshal(),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("vault: svid login: %w", err)
+		}
+		if secret == nil || secret.Auth == nil {
+			return nil, errors.New("vault: svid login returned no auth info")
+		}
+		client.SetToken(secret.Auth.ClientToken)
 		return secret, nil
 
 	default:
@@ -373,6 +451,12 @@ func (c *VaultClient) Close() error {
 		if w != nil {
 			w.Stop()
 		}
+		if c.cfg.jwtSrc != nil {
+			_ = c.cfg.jwtSrc.Close()
+		}
+		if c.cfg.x509Src != nil {
+			_ = c.cfg.x509Src.Close()
+		}
 	})
 	return nil
 }
@@ -399,10 +483,11 @@ func envOrFile(name string) string {
 //
 //	VAULT_ADDR            required — server address.
 //	VAULT_NAMESPACE       optional — enterprise namespace.
-//	VAULT_AUTH_MODE       one of: token (default), approle, kubernetes.
+//	VAULT_AUTH_MODE       one of: token (default), approle, kubernetes, svid.
 //	VAULT_TOKEN           token mode.
 //	VAULT_APPROLE_ROLE_ID + VAULT_APPROLE_SECRET_ID   approle mode.
 //	VAULT_K8S_ROLE (+ VAULT_K8S_TOKEN_PATH)            kubernetes mode.
+//	VAULT_SVID_ROLE       svid mode (Vault jwt-backend role; needs a SPIFFE socket).
 //	VAULT_KV_MOUNT        optional — KV v2 mount path (default: "secret").
 //
 // The credential vars VAULT_TOKEN, VAULT_APPROLE_ROLE_ID and
@@ -410,9 +495,21 @@ func envOrFile(name string) string {
 // a file whose trimmed contents supply the value (the Docker-secrets
 // convention). The direct env var wins when both are set.
 func NewFromEnv(ctx context.Context) (*VaultClient, error) {
+	cfg, err := configFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	return NewVaultClient(ctx, cfg)
+}
+
+// configFromEnv reads the VAULT_* environment variables into a VaultConfig
+// without connecting. It is the pure, side-effect-free half of NewFromEnv,
+// split out so the env-parsing + mode-selection logic is unit-testable without
+// a live SPIRE/Vault.
+func configFromEnv() (VaultConfig, error) {
 	addr := os.Getenv("VAULT_ADDR")
 	if addr == "" {
-		return nil, errors.New("vault: VAULT_ADDR is required")
+		return VaultConfig{}, errors.New("vault: VAULT_ADDR is required")
 	}
 	mode := VaultAuthMode(strings.ToLower(os.Getenv("VAULT_AUTH_MODE")))
 	cfg := VaultConfig{
@@ -424,13 +521,14 @@ func NewFromEnv(ctx context.Context) (*VaultClient, error) {
 		SecretID:   envOrFile("VAULT_APPROLE_SECRET_ID"),
 		K8sRole:    os.Getenv("VAULT_K8S_ROLE"),
 		K8sJWTPath: os.Getenv("VAULT_K8S_TOKEN_PATH"),
+		SVIDRole:   os.Getenv("VAULT_SVID_ROLE"),
 		MountPath:  os.Getenv("VAULT_KV_MOUNT"),
-		// Default: renew the lease for approle/kubernetes; token mode has none.
-		// VAULT_AUTO_RENEW ("true"/"false") overrides the default.
-		AutoRenew: mode == VaultAuthAppRole || mode == VaultAuthKubernetes,
+		// Default: renew the lease for approle/kubernetes/svid; token mode has
+		// none. VAULT_AUTO_RENEW ("true"/"false") overrides the default.
+		AutoRenew: mode == VaultAuthAppRole || mode == VaultAuthKubernetes || mode == VaultAuthSVID,
 	}
 	if v := os.Getenv("VAULT_AUTO_RENEW"); v != "" {
 		cfg.AutoRenew = strings.EqualFold(v, "true") || v == "1"
 	}
-	return NewVaultClient(ctx, cfg)
+	return cfg, nil
 }

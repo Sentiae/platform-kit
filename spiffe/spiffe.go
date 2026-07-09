@@ -15,6 +15,7 @@ package spiffe
 
 import (
 	"context"
+	"crypto/tls"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
@@ -48,6 +49,22 @@ func ServiceID(service string) spiffeid.ID {
 // update arrives. The caller owns the source and must Close it on shutdown.
 func NewSource(ctx context.Context) (*workloadapi.X509Source, error) {
 	return workloadapi.NewX509Source(ctx)
+}
+
+// NewJWTSource creates a JWTSource backed by the SPIFFE Workload API. It reads
+// the endpoint from SPIFFE_ENDPOINT_SOCKET and blocks until the first update
+// arrives. The caller owns the source and must Close it on shutdown. Callers
+// fetch a JWT-SVID for a given audience via src.FetchJWTSVID.
+func NewJWTSource(ctx context.Context) (*workloadapi.JWTSource, error) {
+	return workloadapi.NewJWTSource(ctx)
+}
+
+// VaultServerTLS returns a *tls.Config that verifies and authorizes Vault's
+// server X509-SVID against the SPIRE-provided bundle in src, requiring the
+// server to present exactly svc/vault. It sets no client certificate — client
+// authentication to Vault is carried by a JWT-SVID, not mTLS.
+func VaultServerTLS(src *workloadapi.X509Source) *tls.Config {
+	return tlsconfig.TLSClientConfig(src, tlsconfig.AuthorizeID(ServiceID("vault")))
 }
 
 // ServerCreds returns gRPC transport credentials that present the workload
