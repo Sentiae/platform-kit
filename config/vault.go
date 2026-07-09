@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	vault "github.com/hashicorp/vault/api"
 	authk8s "github.com/hashicorp/vault/api/auth/kubernetes"
+
+	"github.com/sentiae/platform-kit/logger"
 )
 
 // VaultAuthMode controls how the VaultClient authenticates to the server.
@@ -38,6 +41,11 @@ type VaultConfig struct {
 	K8sJWTPath string        // path to the projected SA token (default: /var/run/secrets/kubernetes.io/serviceaccount/token).
 	MountPath  string        // KV v2 mount path (default: "secret").
 	Timeout    time.Duration // per-request timeout (default: 10s).
+	// AutoRenew keeps the login lease alive in the background for approle and
+	// kubernetes modes (a renewable lease). NewFromEnv defaults it to true for
+	// those modes and false for token mode (token mode has no lease). It is a
+	// no-op for token mode and for non-renewable leases.
+	AutoRenew bool
 }
 
 // VaultClient is a thin wrapper over hashicorp/vault/api that focuses on the
@@ -45,6 +53,18 @@ type VaultConfig struct {
 type VaultClient struct {
 	client    *vault.Client
 	mountPath string
+	cfg       VaultConfig
+
+	// loginSecret holds the *api.Secret returned by an approle/kubernetes
+	// login (the lease with ClientToken/Renewable/LeaseDuration). It is nil in
+	// token mode.
+	loginSecret *vault.Secret
+
+	// renewer coordination. renewCancel is nil when no renewer is running.
+	renewMu     sync.Mutex
+	renewCancel context.CancelFunc
+	watcher     *vault.LifetimeWatcher
+	closeOnce   sync.Once
 }
 
 // NewVaultClient connects to Vault using the supplied configuration. It
@@ -71,7 +91,8 @@ func NewVaultClient(ctx context.Context, cfg VaultConfig) (*VaultClient, error) 
 		client.SetNamespace(cfg.Namespace)
 	}
 
-	if err := authenticate(ctx, client, cfg); err != nil {
+	loginSecret, err := authenticate(ctx, client, cfg)
+	if err != nil {
 		return nil, err
 	}
 
@@ -80,12 +101,25 @@ func NewVaultClient(ctx context.Context, cfg VaultConfig) (*VaultClient, error) 
 		mount = "secret"
 	}
 
-	return &VaultClient{client: client, mountPath: mount}, nil
+	c := &VaultClient{
+		client:      client,
+		mountPath:   mount,
+		cfg:         cfg,
+		loginSecret: loginSecret,
+	}
+
+	if cfg.AutoRenew {
+		c.startRenewer(ctx)
+	}
+
+	return c, nil
 }
 
 // authenticate performs the initial login based on cfg.AuthMode. When the
-// mode is empty it defaults to token auth.
-func authenticate(ctx context.Context, client *vault.Client, cfg VaultConfig) error {
+// mode is empty it defaults to token auth. It returns the *api.Secret carrying
+// the login lease for approle/kubernetes modes (nil for token mode, which has
+// no lease).
+func authenticate(ctx context.Context, client *vault.Client, cfg VaultConfig) (*vault.Secret, error) {
 	mode := cfg.AuthMode
 	if mode == "" {
 		mode = VaultAuthToken
@@ -93,31 +127,31 @@ func authenticate(ctx context.Context, client *vault.Client, cfg VaultConfig) er
 	switch mode {
 	case VaultAuthToken:
 		if cfg.Token == "" {
-			return errors.New("vault: token auth requires a token")
+			return nil, errors.New("vault: token auth requires a token")
 		}
 		client.SetToken(cfg.Token)
-		return nil
+		return nil, nil
 
 	case VaultAuthAppRole:
 		if cfg.RoleID == "" || cfg.SecretID == "" {
-			return errors.New("vault: approle auth requires role_id and secret_id")
+			return nil, errors.New("vault: approle auth requires role_id and secret_id")
 		}
 		secret, err := client.Logical().WriteWithContext(ctx, "auth/approle/login", map[string]any{
 			"role_id":   cfg.RoleID,
 			"secret_id": cfg.SecretID,
 		})
 		if err != nil {
-			return fmt.Errorf("vault: approle login: %w", err)
+			return nil, fmt.Errorf("vault: approle login: %w", err)
 		}
 		if secret == nil || secret.Auth == nil {
-			return errors.New("vault: approle login returned no auth info")
+			return nil, errors.New("vault: approle login returned no auth info")
 		}
 		client.SetToken(secret.Auth.ClientToken)
-		return nil
+		return secret, nil
 
 	case VaultAuthKubernetes:
 		if cfg.K8sRole == "" {
-			return errors.New("vault: kubernetes auth requires a role")
+			return nil, errors.New("vault: kubernetes auth requires a role")
 		}
 		var opts []authk8s.LoginOption
 		if cfg.K8sJWTPath != "" {
@@ -125,19 +159,19 @@ func authenticate(ctx context.Context, client *vault.Client, cfg VaultConfig) er
 		}
 		auth, err := authk8s.NewKubernetesAuth(cfg.K8sRole, opts...)
 		if err != nil {
-			return fmt.Errorf("vault: build k8s auth: %w", err)
+			return nil, fmt.Errorf("vault: build k8s auth: %w", err)
 		}
 		secret, err := client.Auth().Login(ctx, auth)
 		if err != nil {
-			return fmt.Errorf("vault: k8s login: %w", err)
+			return nil, fmt.Errorf("vault: k8s login: %w", err)
 		}
 		if secret == nil || secret.Auth == nil {
-			return errors.New("vault: k8s login returned no auth info")
+			return nil, errors.New("vault: k8s login returned no auth info")
 		}
-		return nil
+		return secret, nil
 
 	default:
-		return fmt.Errorf("vault: unsupported auth mode %q", mode)
+		return nil, fmt.Errorf("vault: unsupported auth mode %q", mode)
 	}
 }
 
@@ -194,13 +228,154 @@ func (c *VaultClient) PutSecret(ctx context.Context, path, key, value string) er
 	return nil
 }
 
+// startRenewer launches the background lease renewer for a renewable
+// approle/kubernetes login. It is a no-op when there is no renewable lease
+// (token mode, or a lease the server marked non-renewable). The renewer runs
+// on a background context so it survives past the caller's boot context; Close
+// cancels it. The inbound ctx supplies only the logger.
+func (c *VaultClient) startRenewer(ctx context.Context) {
+	if c.loginSecret == nil || c.loginSecret.Auth == nil || !c.loginSecret.Auth.Renewable {
+		return
+	}
+	l := logger.FromContext(ctx)
+	renewCtx, cancel := context.WithCancel(context.Background())
+	renewCtx = logger.NewContext(renewCtx, l)
+
+	c.renewMu.Lock()
+	c.renewCancel = cancel
+	c.renewMu.Unlock()
+
+	go c.renewLoop(renewCtx)
+}
+
+// renewLoop keeps the login lease alive. For AppRole with a server-side
+// token_period, renewal resets to the period indefinitely, so DoneCh is the
+// exceptional path; when it fires the loop attempts a full re-login and
+// restarts the watcher. It never panics and never crashes the process.
+func (c *VaultClient) renewLoop(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			logger.FromContext(ctx).Error("vault: token renewer panicked", "recover", r)
+		}
+	}()
+
+	for {
+		c.renewMu.Lock()
+		secret := c.loginSecret
+		c.renewMu.Unlock()
+		if secret == nil || secret.Auth == nil || !secret.Auth.Renewable {
+			logger.FromContext(ctx).Warn("vault: login lease not renewable; auto-renewal stopping")
+			return
+		}
+
+		watcher, err := c.client.NewLifetimeWatcher(&vault.LifetimeWatcherInput{Secret: secret})
+		if err != nil {
+			logger.FromContext(ctx).Error("vault: create lifetime watcher failed; attempting re-login", "err", err)
+			if !c.reauth(ctx) {
+				return
+			}
+			continue
+		}
+
+		c.renewMu.Lock()
+		c.watcher = watcher
+		c.renewMu.Unlock()
+
+		go watcher.Start()
+		logger.FromContext(ctx).Info("vault: token auto-renewal started", "auth_mode", string(c.cfg.AuthMode))
+
+		reauth := c.consumeRenewals(ctx, watcher)
+		watcher.Stop()
+		if !reauth {
+			// Context cancelled via Close — stop for good.
+			return
+		}
+		logger.FromContext(ctx).Warn("vault: token renewal ended; attempting re-login")
+		if !c.reauth(ctx) {
+			return
+		}
+	}
+}
+
+// consumeRenewals drains a watcher's channels until either the context is
+// cancelled (returns false) or renewal permanently ends on DoneCh (returns
+// true, signalling the caller to re-login).
+func (c *VaultClient) consumeRenewals(ctx context.Context, w *vault.LifetimeWatcher) bool {
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case err := <-w.DoneCh():
+			if err != nil {
+				logger.FromContext(ctx).Warn("vault: lease renewal stopped with error", "err", err)
+			}
+			return true
+		case <-w.RenewCh():
+			logger.FromContext(ctx).Debug("vault: lease renewed")
+		}
+	}
+}
+
+// reauth performs a full re-login and replaces the stored lease. It retries
+// with exponential backoff (capped) until it succeeds or the context is
+// cancelled. Returns false only when the context is cancelled.
+func (c *VaultClient) reauth(ctx context.Context) bool {
+	backoff := time.Second
+	for {
+		if ctx.Err() != nil {
+			return false
+		}
+		secret, err := authenticate(ctx, c.client, c.cfg)
+		if err == nil && secret != nil && secret.Auth != nil {
+			c.renewMu.Lock()
+			c.loginSecret = secret
+			c.renewMu.Unlock()
+			logger.FromContext(ctx).Info("vault: re-login succeeded; resuming auto-renewal")
+			return true
+		}
+		logger.FromContext(ctx).Error("vault: re-login failed; will retry", "err", err)
+		if !sleepCtx(ctx, backoff) {
+			return false
+		}
+		if backoff < 30*time.Second {
+			backoff *= 2
+		}
+	}
+}
+
+// sleepCtx waits for d or until ctx is cancelled. Returns false if cancelled.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
+	}
+}
+
 // Raw exposes the underlying Vault API client for callers that need access
 // to auth backends or the logical API directly.
 func (c *VaultClient) Raw() *vault.Client { return c.client }
 
-// Close is a no-op today; it exists so callers can swap in implementations
-// (e.g. tests) that need cleanup without changing their call-sites.
-func (c *VaultClient) Close() error { return nil }
+// Close cancels the background token renewer (if any) and stops its watcher.
+// It is idempotent and safe to call on a token-mode client (no renewer).
+func (c *VaultClient) Close() error {
+	c.closeOnce.Do(func() {
+		c.renewMu.Lock()
+		cancel := c.renewCancel
+		w := c.watcher
+		c.renewMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		if w != nil {
+			w.Stop()
+		}
+	})
+	return nil
+}
 
 // envOrFile returns the value of the environment variable named name when it
 // is non-empty. Otherwise, if the companion variable name+"_FILE" points at a
@@ -239,16 +414,23 @@ func NewFromEnv(ctx context.Context) (*VaultClient, error) {
 	if addr == "" {
 		return nil, errors.New("vault: VAULT_ADDR is required")
 	}
+	mode := VaultAuthMode(strings.ToLower(os.Getenv("VAULT_AUTH_MODE")))
 	cfg := VaultConfig{
 		Address:    addr,
 		Namespace:  os.Getenv("VAULT_NAMESPACE"),
-		AuthMode:   VaultAuthMode(strings.ToLower(os.Getenv("VAULT_AUTH_MODE"))),
+		AuthMode:   mode,
 		Token:      envOrFile("VAULT_TOKEN"),
 		RoleID:     envOrFile("VAULT_APPROLE_ROLE_ID"),
 		SecretID:   envOrFile("VAULT_APPROLE_SECRET_ID"),
 		K8sRole:    os.Getenv("VAULT_K8S_ROLE"),
 		K8sJWTPath: os.Getenv("VAULT_K8S_TOKEN_PATH"),
 		MountPath:  os.Getenv("VAULT_KV_MOUNT"),
+		// Default: renew the lease for approle/kubernetes; token mode has none.
+		// VAULT_AUTO_RENEW ("true"/"false") overrides the default.
+		AutoRenew: mode == VaultAuthAppRole || mode == VaultAuthKubernetes,
+	}
+	if v := os.Getenv("VAULT_AUTO_RENEW"); v != "" {
+		cfg.AutoRenew = strings.EqualFold(v, "true") || v == "1"
 	}
 	return NewVaultClient(ctx, cfg)
 }
