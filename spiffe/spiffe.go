@@ -16,12 +16,21 @@ package spiffe
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
+	"time"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"github.com/spiffe/go-spiffe/v2/spiffetls/tlsconfig"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 	"google.golang.org/grpc/credentials"
 )
+
+// sourceStartupTimeout bounds how long NewSource / NewJWTSource wait for the
+// first SVID before degrading. go-spiffe's constructors retry a missing or
+// unreachable Workload API socket indefinitely; without this bound a service
+// that opts into mTLS but lacks a reachable socket would HANG at startup
+// instead of honoring the degrade-to-insecure contract callers rely on.
+const sourceStartupTimeout = 15 * time.Second
 
 // TrustDomain is the Sentiae SPIFFE trust domain in URI form.
 const TrustDomain = "spiffe://sentiae.io"
@@ -44,18 +53,52 @@ func ServiceID(service string) spiffeid.ID {
 	return id
 }
 
+// probeWorkloadAPI verifies the SPIFFE Workload API socket is reachable and
+// actually delivers an SVID, bounded by sourceStartupTimeout. It exists so the
+// source constructors below can degrade (return an error) instead of hanging:
+// go-spiffe's NewX509Source/NewJWTSource retry a missing socket forever, so a
+// service that opted into mTLS but lacks a reachable socket would otherwise
+// wedge at startup rather than fall back to insecure.
+func probeWorkloadAPI(ctx context.Context) error {
+	probeCtx, cancel := context.WithTimeout(ctx, sourceStartupTimeout)
+	defer cancel()
+	client, err := workloadapi.New(probeCtx)
+	if err != nil {
+		return fmt.Errorf("spiffe: workload API unreachable: %w", err)
+	}
+	defer client.Close()
+	if _, err := client.FetchX509Context(probeCtx); err != nil {
+		return fmt.Errorf("spiffe: no SVID from the workload API within %s (socket unreachable?): %w", sourceStartupTimeout, err)
+	}
+	return nil
+}
+
 // NewSource creates an X509Source backed by the SPIFFE Workload API. It reads
-// the endpoint from SPIFFE_ENDPOINT_SOCKET and blocks until the first SVID
-// update arrives. The caller owns the source and must Close it on shutdown.
+// the endpoint from SPIFFE_ENDPOINT_SOCKET. When the caller's ctx has no
+// deadline, a bounded reachability probe runs first so an unreachable socket
+// degrades (returns an error) instead of blocking forever; on success the
+// source is built with the caller's long-lived ctx for SVID rotation. The
+// caller owns the source and must Close it on shutdown.
 func NewSource(ctx context.Context) (*workloadapi.X509Source, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		if err := probeWorkloadAPI(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return workloadapi.NewX509Source(ctx)
 }
 
 // NewJWTSource creates a JWTSource backed by the SPIFFE Workload API. It reads
-// the endpoint from SPIFFE_ENDPOINT_SOCKET and blocks until the first update
-// arrives. The caller owns the source and must Close it on shutdown. Callers
-// fetch a JWT-SVID for a given audience via src.FetchJWTSVID.
+// the endpoint from SPIFFE_ENDPOINT_SOCKET and, like NewSource, runs a bounded
+// reachability probe first when the caller's ctx has no deadline. The caller
+// owns the source and must Close it on shutdown. Callers fetch a JWT-SVID for a
+// given audience via src.FetchJWTSVID.
 func NewJWTSource(ctx context.Context) (*workloadapi.JWTSource, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		if err := probeWorkloadAPI(ctx); err != nil {
+			return nil, err
+		}
+	}
 	return workloadapi.NewJWTSource(ctx)
 }
 
