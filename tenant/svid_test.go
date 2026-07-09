@@ -46,8 +46,16 @@ func TestCanActInOrg_SVIDGrants(t *testing.T) {
 
 	// Configure the package-level grants for this test, restore after.
 	prev := defaultServiceGrants
-	SetServiceGrants(NewServiceGrants(grantedSVID))
+	SetServiceGrants(NewServiceGrants(map[string]ServiceGrant{
+		grantedSVID: {CrossOrg: true},
+	}))
 	t.Cleanup(func() { SetServiceGrants(prev) })
+
+	// Grant enforcement on the SVID path is active only under strict SVID-authz
+	// (the lenient rollout step lets any peer-SVID service act in any org).
+	prevStrict := meshSVIDAuthzStrict
+	SetMeshSVIDAuthzStrict(true)
+	t.Cleanup(func() { SetMeshSVIDAuthzStrict(prevStrict) })
 
 	tests := []struct {
 		name string
@@ -81,10 +89,10 @@ func TestCanActInOrg_SVIDGrants(t *testing.T) {
 // unconfigured (zero-value) grant set denies every SVID.
 func TestServiceGrants_ZeroValueDenies(t *testing.T) {
 	var g ServiceGrants
-	if g.Allows("spiffe://sentiae.io/svc/foundry", orgA) {
+	if g.AllowsOrg("spiffe://sentiae.io/svc/foundry", orgA) {
 		t.Fatal("zero-value ServiceGrants must deny all SVIDs")
 	}
-	if g.Allows("", orgA) {
+	if g.AllowsOrg("", orgA) {
 		t.Fatal("empty SVID must be denied")
 	}
 }

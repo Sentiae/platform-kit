@@ -8,6 +8,7 @@ import (
 
 	"github.com/sentiae/platform-kit/logger"
 	"github.com/sentiae/platform-kit/middleware"
+	"github.com/spiffe/go-spiffe/v2/spiffeid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -168,6 +169,7 @@ func TestUnaryAuth_ValidAPIKey(t *testing.T) {
 	l := testLogger(&buf)
 
 	interceptor := UnaryAuth(AuthConfig{
+		AcceptAPIKey:    true,
 		APIKeyValidator: &fakeAPIKeyValidator{validKey: "secret-key"},
 		Logger:          l,
 	})
@@ -193,6 +195,7 @@ func TestUnaryAuth_InvalidAPIKey(t *testing.T) {
 	l := testLogger(&buf)
 
 	interceptor := UnaryAuth(AuthConfig{
+		AcceptAPIKey:    true,
 		APIKeyValidator: &fakeAPIKeyValidator{validKey: "secret-key"},
 		Logger:          l,
 	})
@@ -277,6 +280,7 @@ func TestUnaryAuth_LayeredCredentials(t *testing.T) {
 			var buf bytes.Buffer
 			l := testLogger(&buf)
 			ic := UnaryAuth(AuthConfig{
+				AcceptAPIKey:    true,
 				TokenValidator:  tt.tokenValidator,
 				APIKeyValidator: tt.apiKeyValidator,
 				Logger:          l,
@@ -324,6 +328,75 @@ func TestUnaryAuth_LayeredCredentials(t *testing.T) {
 				t.Fatalf("expected claims present=%v, got %v", tt.wantClaims, hasClaims)
 			}
 		})
+	}
+}
+
+// TestUnaryAuth_PeerSVID exercises the SVID credential path: a call carrying a
+// peer SPIFFE ID (stashed by the SVID interceptor) establishes a service
+// principal with no api-key and no shared secret, and the service caller label
+// is the short name after /svc/.
+func TestUnaryAuth_PeerSVID(t *testing.T) {
+	var buf bytes.Buffer
+	l := testLogger(&buf)
+
+	ic := UnaryAuth(AuthConfig{Logger: l}) // no validators, no api-key
+
+	var capturedCtx context.Context
+	handler := func(ctx context.Context, req any) (any, error) {
+		capturedCtx = ctx
+		return "ok", nil
+	}
+
+	id, err := spiffeid.FromString("spiffe://sentiae.io/svc/foundry")
+	if err != nil {
+		t.Fatalf("build spiffe id: %v", err)
+	}
+	// No metadata beyond an empty set; the SVID is on the context (as the SVID
+	// interceptor would place it before Auth runs).
+	ctx := metadata.NewIncomingContext(context.Background(), metadata.New(nil))
+	ctx = context.WithValue(ctx, svidCtxKey{}, id)
+
+	resp, err := ic(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test/Auth"}, handler)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp != "ok" {
+		t.Fatalf("expected 'ok', got %v", resp)
+	}
+	svc, ok := GetServiceCaller(capturedCtx)
+	if !ok || svc != "foundry" {
+		t.Fatalf("expected service caller 'foundry', got %q (ok=%v)", svc, ok)
+	}
+}
+
+// TestUnaryAuth_RequirePeerSVID confirms rollout step 3: with RequirePeerSVID
+// set, a non-skipped call carrying no peer SVID is rejected Unauthenticated.
+func TestUnaryAuth_RequirePeerSVID(t *testing.T) {
+	var buf bytes.Buffer
+	l := testLogger(&buf)
+
+	ic := UnaryAuth(AuthConfig{
+		RequirePeerSVID: true,
+		TokenValidator:  &fakeTokenValidator{claims: middleware.Claims{Subject: "u"}},
+		Logger:          l,
+	})
+
+	handler := func(ctx context.Context, req any) (any, error) {
+		t.Fatal("handler should not be called")
+		return nil, nil
+	}
+
+	// A valid bearer is present but there is no peer SVID.
+	md := metadata.New(map[string]string{"authorization": "Bearer good"})
+	ctx := metadata.NewIncomingContext(context.Background(), md)
+
+	_, err := ic(ctx, nil, &grpc.UnaryServerInfo{FullMethod: "/test/Auth"}, handler)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	st, _ := status.FromError(err)
+	if st.Code() != codes.Unauthenticated {
+		t.Fatalf("expected Unauthenticated, got %v", st.Code())
 	}
 }
 

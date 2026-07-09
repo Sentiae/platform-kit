@@ -30,6 +30,14 @@ type AuthConfig struct {
 	// (e.g., health checks, reflection).
 	SkipMethods []string
 
+	// AcceptAPIKey keeps the legacy x-api-key path enabled. False retires the
+	// shared token (rollout step 4). Default true (back-compat).
+	AcceptAPIKey bool
+
+	// RequirePeerSVID rejects any non-skipped call with no peer SVID (rollout
+	// step 3). Default false.
+	RequirePeerSVID bool
+
 	// Logger is used for auth-related logging. Defaults to slog.Default().
 	Logger *slog.Logger
 }
@@ -96,8 +104,20 @@ func authenticate(ctx context.Context, cfg AuthConfig, l *slog.Logger) (context.
 
 	established := false
 
-	// 1. Service principal — a valid x-api-key marks a trusted service caller.
-	if cfg.APIKeyValidator != nil {
+	// 1. Service principal via the peer SVID — the cryptographic mesh identity,
+	// the successor to x-api-key. A present peer SVID (populated by the SVID
+	// interceptor, which runs before Auth) establishes a trusted service caller
+	// with no shared secret.
+	if id, ok := SVIDFromContext(ctx); ok {
+		ctx = context.WithValue(ctx, serviceCallerCtxKey{}, strings.TrimPrefix(id.Path(), "/svc/"))
+		established = true
+	} else if cfg.RequirePeerSVID {
+		return ctx, status.Error(codes.Unauthenticated, "peer SVID required")
+	}
+
+	// 2. Service principal — a valid x-api-key marks a trusted service caller
+	// (the legacy shared-secret path, retired when AcceptAPIKey is false).
+	if cfg.AcceptAPIKey && cfg.APIKeyValidator != nil {
 		if keys := md.Get("x-api-key"); len(keys) > 0 {
 			if err := cfg.APIKeyValidator.Validate(ctx, keys[0]); err != nil {
 				l.WarnContext(ctx, "api key validation failed", "error", err)
@@ -112,8 +132,8 @@ func authenticate(ctx context.Context, cfg AuthConfig, l *slog.Logger) (context.
 		}
 	}
 
-	// 2. User principal — validate a present Bearer even when the api-key
-	// already passed, so the user identity is layered on top.
+	// 3. User principal — validate a present Bearer even when a service
+	// principal already passed, so the user identity is layered on top.
 	if cfg.TokenValidator != nil {
 		if auths := md.Get("authorization"); len(auths) > 0 {
 			parts := strings.SplitN(auths[0], " ", 2)
@@ -133,7 +153,7 @@ func authenticate(ctx context.Context, cfg AuthConfig, l *slog.Logger) (context.
 		}
 	}
 
-	// 3. Terminal — reject only when no principal was established.
+	// 4. Terminal — reject only when no principal was established.
 	if !established {
 		return ctx, status.Error(codes.Unauthenticated, "no credentials provided")
 	}
@@ -144,7 +164,8 @@ func authenticate(ctx context.Context, cfg AuthConfig, l *slog.Logger) (context.
 type claimsCtxKey struct{}
 
 // serviceCallerCtxKey is the unexported context key for storing the service
-// caller label established by a valid x-api-key.
+// caller label established by a peer SVID (short name after /svc/) or a valid
+// x-api-key (x-service-name).
 type serviceCallerCtxKey struct{}
 
 // GetClaims returns the JWT claims from the gRPC context, or zero-value Claims if not set.
@@ -153,7 +174,9 @@ func GetClaims(ctx context.Context) (middleware.Claims, bool) {
 	return c, ok
 }
 
-// GetServiceCaller returns the x-service-name label when the call presented a valid x-api-key.
+// GetServiceCaller returns the service caller label — the SVID short name (the
+// segment after /svc/) for a peer-mTLS call, else the x-service-name label when
+// the call presented a valid x-api-key.
 func GetServiceCaller(ctx context.Context) (string, bool) {
 	v, ok := ctx.Value(serviceCallerCtxKey{}).(string)
 	return v, ok

@@ -5,8 +5,8 @@
 // and the HTTP middleware (user claims), or an explicitly-set Principal for
 // transports that run neither (e.g. the git OCI HTTP path).
 //
-// Dependency direction is one-way: tenant imports interceptor, middleware
-// and authjwt; none of them import tenant.
+// Dependency direction is one-way: tenant imports interceptor, middleware,
+// authjwt, config and logger; none of them import tenant.
 package tenant
 
 import (
@@ -104,18 +104,28 @@ func (p Principal) OrgIDs() []uuid.UUID {
 // may act when org is among its OrgIDs() or it is a platform admin.
 //
 // Service (non-user) principals:
-//   - Without a peer SVID (ServiceSVID == "") — today's state — the decision
-//     is byte-identical to before: an x-api-key service (ServiceAuthed) may
-//     always act; a bare principal is denied (fail-closed).
 //   - With a peer SVID, the decision is scoped by the configured ServiceGrants
 //     allow-set (default: deny). A cross-org grant lets the SVID act in any
 //     org; an ungranted SVID is denied.
+//   - Without a peer SVID (ServiceSVID == "") — a plaintext island mid-rollout
+//     — a legacy x-api-key service (ServiceAuthed) may act in any org UNTIL
+//     SVID-authz goes strict ([SetMeshSVIDAuthzStrict]), after which it fails
+//     closed; a bare principal is always denied.
 func (p Principal) CanActInOrg(org uuid.UUID) bool {
 	if p.Claims == nil {
 		if p.ServiceSVID != "" {
-			return defaultServiceGrants.Allows(p.ServiceSVID, org)
+			// Until SVID-authz goes strict, a peer-SVID service acts in any org
+			// (mirrors the legacy api-key any-org) so the grant policy can be
+			// shipped behavior-neutrally and enforced in a later, controlled
+			// step. Once strict, the per-SVID cross-org grant governs.
+			if !meshSVIDAuthzStrict {
+				return true
+			}
+			return defaultServiceGrants.AllowsOrg(p.ServiceSVID, org)
 		}
-		return p.ServiceAuthed
+		// No peer SVID (a plaintext island mid-rollout). Honor legacy api-key
+		// any-org ONLY until SVID-authz goes strict, then fail closed.
+		return p.ServiceAuthed && !meshSVIDAuthzStrict
 	}
 	if p.Claims.PlatformAdmin {
 		return true
@@ -156,9 +166,10 @@ func AuthorizeOrg(ctx context.Context, org uuid.UUID) error {
 }
 
 // AssertOrgOrNotFound is for by-id reads/writes where a cross-tenant hit must
-// not leak existence: returns codes.NotFound (NOT PermissionDenied) when a
-// user principal may not act in org. A service principal always passes. No
-// principal → codes.Unauthenticated.
+// not leak existence: returns codes.NotFound (NOT PermissionDenied) when the
+// caller may not act in org. Service principals are subject to their
+// ServiceGrants — an ungranted service is denied (→ NotFound), not waved
+// through. No principal → codes.Unauthenticated.
 func AssertOrgOrNotFound(ctx context.Context, org uuid.UUID, notFoundMsg string) error {
 	p, ok := FromContext(ctx)
 	if !ok {
