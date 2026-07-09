@@ -30,7 +30,14 @@ import (
 // unreachable Workload API socket indefinitely; without this bound a service
 // that opts into mTLS but lacks a reachable socket would HANG at startup
 // instead of honoring the degrade-to-insecure contract callers rely on.
-const sourceStartupTimeout = 15 * time.Second
+//
+// It is generous (60s) on purpose: during a mass redeploy the SPIRE agent
+// attests many new containers back-to-back, and a too-tight window would let a
+// service give up and degrade to PLAINTEXT — which, in a strict mesh, breaks
+// every edge to it. Waiting a minute for an identity at boot is cheap; silently
+// dropping out of the mesh is not. A genuinely missing socket still degrades,
+// just after this bound.
+const sourceStartupTimeout = 60 * time.Second
 
 // TrustDomain is the Sentiae SPIFFE trust domain in URI form.
 const TrustDomain = "spiffe://sentiae.io"
