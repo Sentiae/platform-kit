@@ -101,6 +101,18 @@ func (b *Builder) Registrar() grpc.ServiceRegistrar {
 	return multiRegistrar{servers: b.servers}
 }
 
+// Server returns a primary underlying *grpc.Server for introspection only
+// (e.g. GetServiceInfo in tests). It is the plaintext server when present
+// (modes off/permissive) else the mTLS server (strict); nil only if no server
+// was built. Do NOT call Serve on it directly — use Builder.Serve so every
+// configured transport is served.
+func (b *Builder) Server() *grpc.Server {
+	if len(b.servers) == 0 {
+		return nil
+	}
+	return b.servers[0]
+}
+
 // Serve registers reflection (and a default health service if the caller did
 // not already register one) on each underlying server, then serves. With one
 // server it serves directly; with two it multiplexes plaintext and TLS on the
