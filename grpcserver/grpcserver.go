@@ -18,6 +18,7 @@ import (
 	"net"
 
 	"github.com/sentiae/platform-kit/config"
+	"github.com/sentiae/platform-kit/interceptor"
 	"github.com/sentiae/platform-kit/spiffe"
 	"github.com/soheilhy/cmux"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
@@ -76,18 +77,29 @@ func New(cfg Config, opts ...grpc.ServerOption) *Builder {
 		mode = config.MTLSModeOff
 	}
 
+	// The SVID interceptors extract the peer's SPIFFE ID (if any) into ctx and
+	// record grpc_peer_transport_total{security}, making mTLS adoption
+	// observable across the mesh. They are no-ops on plaintext and never error,
+	// so they are prepended to every underlying server (both transports).
+	svidOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(interceptor.UnarySVID()),
+		grpc.ChainStreamInterceptor(interceptor.StreamSVID()),
+	}
+
 	switch mode {
 	case config.MTLSModePermissive:
-		b.plain = grpc.NewServer(opts...)
-		mtlsOpts := append([]grpc.ServerOption{grpc.Creds(spiffe.ServerCreds(cfg.Source))}, opts...)
+		b.plain = grpc.NewServer(append(append([]grpc.ServerOption{}, svidOpts...), opts...)...)
+		mtlsOpts := append([]grpc.ServerOption{grpc.Creds(spiffe.ServerCreds(cfg.Source))}, svidOpts...)
+		mtlsOpts = append(mtlsOpts, opts...)
 		b.mtls = grpc.NewServer(mtlsOpts...)
 		b.servers = []*grpc.Server{b.plain, b.mtls}
 	case config.MTLSModeStrict:
-		mtlsOpts := append([]grpc.ServerOption{grpc.Creds(spiffe.ServerCreds(cfg.Source))}, opts...)
+		mtlsOpts := append([]grpc.ServerOption{grpc.Creds(spiffe.ServerCreds(cfg.Source))}, svidOpts...)
+		mtlsOpts = append(mtlsOpts, opts...)
 		b.mtls = grpc.NewServer(mtlsOpts...)
 		b.servers = []*grpc.Server{b.mtls}
 	default: // off
-		b.plain = grpc.NewServer(opts...)
+		b.plain = grpc.NewServer(append(append([]grpc.ServerOption{}, svidOpts...), opts...)...)
 		b.servers = []*grpc.Server{b.plain}
 	}
 
