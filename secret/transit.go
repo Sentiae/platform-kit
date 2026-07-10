@@ -123,9 +123,6 @@ func (t *TenantTransit) ensureKey(ctx context.Context, org uuid.UUID) error {
 		"type":                   tenantKeyType,
 		"exportable":             false,
 		"allow_plaintext_backup": false,
-		// deletion_allowed:true enables crypto-shred (owner-locked): deleting
-		// the org's KEK renders every blob sealed under it permanently opaque.
-		"deletion_allowed": true,
 	})
 	if err != nil {
 		// A pre-existing key may surface as an error on some Vault versions;
@@ -133,6 +130,17 @@ func (t *TenantTransit) ensureKey(ctx context.Context, org uuid.UUID) error {
 		if !strings.Contains(err.Error(), "already exists") {
 			return fmt.Errorf("secret: ensure tenant KEK %q: %w", keyName, err)
 		}
+	}
+
+	// Enable crypto-shred (owner-locked D-069): deleting the org's KEK renders
+	// every blob sealed under it permanently opaque. `deletion_allowed` is NOT a
+	// key-create parameter (Vault ignores it there) — it must be set via the
+	// key's /config endpoint. Idempotent, so safe to (re)apply each ensure.
+	cfgPath := fmt.Sprintf("%s/keys/%s/config", t.mount, keyName)
+	if _, cfgErr := t.client.Logical().WriteWithContext(ctx, cfgPath, map[string]any{
+		"deletion_allowed": true,
+	}); cfgErr != nil {
+		return fmt.Errorf("secret: enable crypto-shred on tenant KEK %q: %w", keyName, cfgErr)
 	}
 
 	t.mu.Lock()
