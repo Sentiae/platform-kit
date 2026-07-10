@@ -114,6 +114,34 @@ func TestStamp(t *testing.T) {
 			},
 			wantStamp: false,
 		},
+		{
+			name: "system org present -> stamps that org (no principal)",
+			ctx: func() context.Context {
+				return tenant.WithSystemOrg(context.Background(), orgA)
+			},
+			wantStamp:  true,
+			wantOrgStr: orgA.String(),
+		},
+		{
+			name: "nil system org -> ErrNilSystemOrg, no stamp",
+			ctx: func() context.Context {
+				return tenant.WithSystemOrg(context.Background(), uuid.Nil)
+			},
+			wantErr:   ErrNilSystemOrg,
+			wantStamp: false,
+		},
+		{
+			name: "system org takes precedence over a conflicting active org that would fail CanActInOrg",
+			ctx: func() context.Context {
+				// Principal authorized only for orgA, active org spoofed to orgB
+				// (would be ErrOrgNotAuthorized), but a system-org of orgB wins and
+				// stamps orgB with no re-verify.
+				ctx := tenant.WithActiveOrg(principalCtx(context.Background(), orgA), orgB)
+				return tenant.WithSystemOrg(ctx, orgB)
+			},
+			wantStamp:  true,
+			wantOrgStr: orgB.String(),
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

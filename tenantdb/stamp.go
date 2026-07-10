@@ -10,13 +10,17 @@
 // Resolution + fail-closed policy (Stamp / StampConn):
 //  1. A system context (tenant.WithSystemContext) is NOT stamped — that path
 //     runs under a BYPASSRLS role. Returns nil.
-//  2. The org to stamp is the requested active org (tenant.WithActiveOrg) if
+//  2. A system-org (tenant.WithSystemOrg) — highest precedence — is stamped WITH
+//     NO principal re-verify: a kafka consumer or per-org job loop has no
+//     Principal, so the trust anchor is the process's own subscription/job, not a
+//     caller assertion. A nil system-org fails closed with ErrNilSystemOrg.
+//  3. Else the org to stamp is the requested active org (tenant.WithActiveOrg) if
 //     present; else, if the principal has EXACTLY ONE authorized org, that org.
 //     Otherwise fail closed with ErrNoActiveOrg (louder + safer than a silent
 //     zero-row transaction).
-//  3. The resolved org is re-verified against the attested principal
-//     (Principal.CanActInOrg); a spoofed active org fails closed with
-//     ErrOrgNotAuthorized.
+//  4. That resolved org (active-org / single-org paths) is re-verified against
+//     the attested principal (Principal.CanActInOrg); a spoofed active org fails
+//     closed with ErrOrgNotAuthorized.
 //
 // This package is additive: it changes no service behavior until a service
 // wires Stamp/StampConn into its TransactionManager (or adopts the Enforce
@@ -43,6 +47,10 @@ var (
 	// ErrOrgNotAuthorized means the resolved active org is not one the attested
 	// principal may act in — a spoofed or stale active org.
 	ErrOrgNotAuthorized = errors.New("tenantdb: principal not authorized for the active org")
+	// ErrNilSystemOrg means a system-org context (tenant.WithSystemOrg) carried
+	// uuid.Nil — a resolution bug in the consumer/job (e.g. an empty envelope org)
+	// that must fail closed rather than stamp a zero org.
+	ErrNilSystemOrg = errors.New("tenantdb: system-org context carried a nil org")
 )
 
 // setConfigSQL sets the transaction-local tenant GUC. The `?` placeholder is
@@ -50,9 +58,25 @@ var (
 // string. is_local => true scopes it to the current transaction.
 const setConfigSQL = "SELECT set_config('app.current_org', ?, true)"
 
-// resolveOrg picks the org to stamp and re-verifies it against the attested
-// principal. Callers must have already handled the system-context skip.
+// resolveOrg picks the org to stamp. Callers must have already handled the
+// system-context skip. Precedence:
+//  1. A system-org (tenant.WithSystemOrg) — highest — is stamped WITH NO
+//     principal re-verify: a consumer/job ctx has no Principal; the trust anchor
+//     is the process's own subscription/job. A nil system-org fails closed with
+//     ErrNilSystemOrg.
+//  2. Else the requested active org (tenant.WithActiveOrg), re-verified against
+//     the attested principal (fail closed ErrOrgNotAuthorized on a spoof).
+//  3. Else a principal with EXACTLY ONE authorized org, re-verified.
+//  4. Else ErrNoActiveOrg.
 func resolveOrg(ctx context.Context) (uuid.UUID, error) {
+	// (1) Process-internal system actor scoped to one org (consumer/job). No
+	// principal to verify — the trust anchor is the process, not a caller.
+	if sysOrg, ok := tenant.SystemOrgFromContext(ctx); ok {
+		if sysOrg == uuid.Nil {
+			return uuid.Nil, ErrNilSystemOrg
+		}
+		return sysOrg, nil
+	}
 	org, ok := tenant.ActiveOrgFromContext(ctx)
 	if !ok {
 		p, pok := tenant.FromContext(ctx)

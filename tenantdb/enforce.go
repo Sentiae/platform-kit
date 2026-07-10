@@ -26,6 +26,28 @@ const pgSetConfigSQL = "SELECT set_config('app.current_org', $1, true)"
 // callback pair for a single statement.
 const txHolderSettingKey = "tenantdb:tx_holder"
 
+// stampedCtxKey marks a ctx whose transaction the sanctioned path already
+// stamped (a TxManager.WithTransaction that called Stamp). The Enforce plugin
+// skips such statements so it does not re-stamp what is already covered. Typed
+// key per root §18.
+type stampedCtxKey struct{}
+
+// WithStamped marks ctx as already tenant-stamped by the sanctioned path. A
+// TxManager.WithTransaction calls this right after its explicit Stamp so the
+// Enforce plugin skips the statements it runs on that transaction (they are
+// already GUC-scoped). Statements on an UNMARKED transaction — a repository that
+// opened its own GORM .Transaction(...) outside WithTransaction — are NOT
+// covered by this and get re-stamped per statement by the plugin.
+func WithStamped(ctx context.Context) context.Context {
+	return context.WithValue(ctx, stampedCtxKey{}, true)
+}
+
+// isStamped reports whether ctx was marked by WithStamped.
+func isStamped(ctx context.Context) bool {
+	v, ok := ctx.Value(stampedCtxKey{}).(bool)
+	return ok && v
+}
+
 // committerPool is a connection pool that is also a transaction committer — the
 // shape returned by both a *sql.Tx and GORM's prepared-statement tx pool.
 type committerPool interface {
@@ -45,13 +67,17 @@ type txHolder struct {
 // outside any caller transaction, where a transaction-local GUC set separately
 // would evaporate (and may even land on a different pooled connection).
 //
-// For each Query/Row/Raw/Create/Update/Delete statement that is (a) NOT already
-// inside a caller-managed transaction and (b) NOT a system context, the plugin
-// wraps the statement in its own transaction: it BEGINs a tx, sets the tenant
-// GUC on that tx, swaps the statement's ConnPool to the tx so GORM runs the
-// original statement on it, then commits (or rolls back on error) afterward.
-// The resolution + fail-closed policy is identical to Stamp — an unresolvable or
-// unauthorized org aborts the statement with the sentinel error.
+// For each Query/Row/Raw/Create/Update/Delete statement that is NOT a system
+// context and NOT already sanctioned-stamped (WithStamped), the plugin stamps
+// the tenant GUC: if the statement runs OUTSIDE any transaction it wraps it in
+// its own GUC-stamped transaction (BEGIN, set the GUC, swap ConnPool so GORM
+// runs the statement on it, then commit/rollback); if it runs inside an
+// UNSANCTIONED transaction (a repository's own GORM .Transaction(...) that the
+// TxManager Stamp never covered) it re-execs set_config directly on that tx
+// (transaction-local + idempotent). Statements on a WithStamped ctx are skipped
+// because the sanctioned WithTransaction already stamped them. The resolution +
+// fail-closed policy is identical to Stamp — an unresolvable or unauthorized org
+// aborts the statement with the sentinel error.
 //
 // VERIFICATION STATUS: the org-resolution + fail-closed core (Stamp / StampConn)
 // is unit-tested. This plugin's transaction-wrap path exercises Postgres-only
@@ -96,10 +122,21 @@ func (enforcePlugin) Initialize(db *gorm.DB) error {
 	return nil
 }
 
-// beforeStatement wraps a non-transactional, non-system statement in a
-// GUC-stamped transaction. It is a no-op when the statement is already inside a
-// caller transaction (the caller's TxManager Stamp covers it) or is a system
-// context.
+// beforeStatement stamps the tenant GUC for a non-system statement.
+//
+//   - System context (tenant.WithSystemContext) → skip (BYPASSRLS path).
+//   - Sanctioned-stamped ctx (WithStamped) → skip: a TxManager.WithTransaction
+//     already ran Stamp on this transaction, so the plugin must not re-stamp it.
+//   - Already inside a transaction but NOT marked stamped (a repository that
+//     opened its own GORM .Transaction(...) outside WithTransaction) → re-exec
+//     set_config directly on that tx and return; the GUC is transaction-local, so
+//     this per-statement re-set is idempotent and tx-scoped. Do NOT self-wrap —
+//     we are already in a tx.
+//   - Not in a transaction (a bare db.WithContext(ctx).First(...)) → self-wrap in
+//     a GUC-stamped transaction (the original behavior).
+//
+// Resolution + fail-closed policy is identical to Stamp — an unresolvable or
+// unauthorized org aborts the statement via db.AddError.
 func beforeStatement(db *gorm.DB) {
 	ctx := db.Statement.Context
 	if ctx == nil {
@@ -108,14 +145,22 @@ func beforeStatement(db *gorm.DB) {
 	if tenant.IsSystemContext(ctx) {
 		return
 	}
-	// Already inside a caller-managed transaction? The pool is a committer; the
-	// TxManager-level Stamp (or the enclosing wrap) already set the GUC. Skip.
-	if _, inTx := db.Statement.ConnPool.(gorm.TxCommitter); inTx {
+	// The sanctioned path (TxManager.WithTransaction) already stamped this tx.
+	if isStamped(ctx) {
 		return
 	}
 	org, err := resolveOrg(ctx)
 	if err != nil {
 		_ = db.AddError(err)
+		return
+	}
+	// Inside an unsanctioned transaction (a repo's own .Transaction(...)): the
+	// TxManager-level Stamp never ran, so re-set the tenant GUC directly on the
+	// tx. Transaction-local + idempotent — safe to repeat per statement.
+	if pool, inTx := db.Statement.ConnPool.(committerPool); inTx {
+		if _, err := pool.ExecContext(ctx, pgSetConfigSQL, org.String()); err != nil {
+			_ = db.AddError(err)
+		}
 		return
 	}
 	tx, err := beginTx(ctx, db.Statement.ConnPool)
