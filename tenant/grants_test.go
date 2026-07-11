@@ -112,7 +112,6 @@ func TestLoadMeshPolicy_Default(t *testing.T) {
 
 	for _, svid := range []string{
 		"spiffe://sentiae.io/svc/foundry",
-		"spiffe://sentiae.io/svc/bff",
 		"spiffe://sentiae.io/svc/vigil",
 	} {
 		if !g.AllowsOrg(svid, orgA) {
@@ -121,6 +120,12 @@ func TestLoadMeshPolicy_Default(t *testing.T) {
 	}
 	if g.AllowsOrg("spiffe://sentiae.io/svc/portal", orgA) {
 		t.Fatal("non-mesh service must be deny-by-default")
+	}
+	// D-073: the BFF is NO LONGER a blanket CrossOrg service — it is purely
+	// user-mediated and forwards the user JWT, so backends enforce the user's org.
+	// A headless (claims-less) BFF SVID must be deny-by-default under strict authz.
+	if g.AllowsOrg("spiffe://sentiae.io/svc/bff", orgA) {
+		t.Fatal("D-073: svc/bff must be deny-by-default (removed from crossOrgMeshServices)")
 	}
 }
 
