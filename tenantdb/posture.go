@@ -1,9 +1,11 @@
 package tenantdb
 
 import (
+	"context"
 	"errors"
 	"fmt"
 
+	"github.com/sentiae/platform-kit/tenant"
 	"gorm.io/gorm"
 )
 
@@ -56,6 +58,12 @@ type roleAttrs struct {
 // Returns ErrPostureMismatch (wrapped with detail) on a mismatch; a raw error on
 // a query failure.
 func AssertPosture(db *gorm.DB, want Posture) error {
+	// Run the posture queries on a system context so the Enforce plugin (which
+	// may already be registered on this pool) skips stamping them — they are
+	// system introspection (pg_roles / pg_policies), not tenant data, and carry
+	// no active org, so without this they would fail closed with ErrNoActiveOrg.
+	db = db.WithContext(tenant.WithSystemContext(context.Background()))
+
 	var attrs roleAttrs
 	if err := db.Raw(
 		"SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user",
