@@ -103,6 +103,13 @@ func (p Principal) OrgIDs() []uuid.UUID {
 // CanActInOrg reports whether the principal may act in org. A user principal
 // may act when org is among its OrgIDs() or it is a platform admin.
 //
+// PRECEDENCE (D-073): when Claims != nil the user's memberships are the SOLE
+// org authority — the peer-SVID grant table is never consulted, so a service
+// SVID can never widen a user-mediated call beyond the user's orgs. Per-SVID
+// CrossOrg/method grants apply EXCLUSIVELY to claims-less (headless) service
+// calls. A present-but-invalid Bearer must have been rejected upstream by the
+// auth interceptor (fail-closed), so a non-nil Claims here is always verified.
+//
 // Service (non-user) principals:
 //   - With a peer SVID, the decision is scoped by the configured ServiceGrants
 //     allow-set (default: deny). A cross-org grant lets the SVID act in any
