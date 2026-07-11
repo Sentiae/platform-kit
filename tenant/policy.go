@@ -23,7 +23,14 @@ var crossOrgMeshServices = []string{
 	"spiffe://sentiae.io/svc/ops",
 	"spiffe://sentiae.io/svc/augur",
 	"spiffe://sentiae.io/svc/vigil",
-	"spiffe://sentiae.io/svc/bff",
+	// NB: svc/bff was REMOVED here (D-073). The BFF is purely user-mediated —
+	// every /graphql request fails closed without a user JWT, and the BFF has no
+	// verified headless org-acting call. It forwards the user's Bearer to every
+	// backend, so backends establish the USER principal (claims present ⇒ sole
+	// org authority in CanActInOrg) and never need the BFF to hold CrossOrg. This
+	// makes RLS a real backstop: a claims-less BFF call can no longer act in any
+	// org. If a genuine headless BFF path is later found, give it a method-scoped
+	// grant (the catalogReadMethods pattern), never blanket CrossOrg back.
 }
 
 // catalogReadMethods are the non-mutating (Get/List/Resolve/Validate) gRPC
