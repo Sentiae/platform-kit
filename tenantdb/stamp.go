@@ -7,7 +7,8 @@
 // reset on commit/rollback, so it can never leak to the next borrower of a
 // pooled connection.
 //
-// Resolution + fail-closed policy (Stamp / StampConn):
+// Resolution + fail-closed policy (Stamp / ReadScoped / the Enforce plugin all
+// share resolveOrg):
 //  1. A system context (tenant.WithSystemContext) is NOT stamped — that path
 //     runs under a BYPASSRLS role. Returns nil.
 //  2. A system-org (tenant.WithSystemOrg) — highest precedence — is stamped WITH
@@ -23,8 +24,8 @@
 //     closed with ErrOrgNotAuthorized.
 //
 // This package is additive: it changes no service behavior until a service
-// wires Stamp/StampConn into its TransactionManager (or adopts the Enforce
-// plugin — see enforce.go).
+// wires Stamp into its TransactionManager (or adopts the Enforce plugin for the
+// read path — see enforce.go — plus ReadScoped for cursor reads).
 package tenantdb
 
 import (
@@ -51,6 +52,16 @@ var (
 	// uuid.Nil — a resolution bug in the consumer/job (e.g. an empty envelope org)
 	// that must fail closed rather than stamp a zero org.
 	ErrNilSystemOrg = errors.New("tenantdb: system-org context carried a nil org")
+	// ErrCursorOutsideTx means a cursor-style read (Raw().Scan / Row() / Rows())
+	// on a tenant table ran on a bare pool with no surrounding transaction. The
+	// Enforce plugin CANNOT safely stamp such a statement: GORM consumes the cursor
+	// AFTER the callback chain returns, but a plugin-opened wrapping tx would have
+	// to commit inside that chain — and database/sql's Tx.Commit force-closes the
+	// still-open rows first ("context canceled"). So the plugin fails closed here
+	// instead of returning a cursor that dies on read. Wrap the read in
+	// tenantdb.ReadScoped (or the service's TransactionManager) so the cursor lives
+	// inside a stamped transaction that outlives it.
+	ErrCursorOutsideTx = errors.New("tenantdb: cursor read (Raw/Row/Rows) on a tenant table requires a transaction; use tenantdb.ReadScoped or the TransactionManager")
 )
 
 // setConfigSQL sets the transaction-local tenant GUC. The `?` placeholder is
@@ -115,19 +126,23 @@ func Stamp(ctx context.Context, tx *gorm.DB) error {
 	return tx.Exec(setConfigSQL, org.String()).Error
 }
 
-// StampConn sets the tenant GUC on an explicit connection a service pins for a
-// unit of work (e.g. a session bound to a single connection) when it does NOT
-// route through the Enforce plugin. Same resolution + fail-closed policy as
-// Stamp. The transaction-local GUC only takes effect for statements that run on
-// the same connection/transaction as this call, so db must be a tx or a
-// connection the caller keeps for the scoped statements.
-func StampConn(ctx context.Context, db *gorm.DB) error {
-	if tenant.IsSystemContext(ctx) {
-		return nil
-	}
-	org, err := resolveOrg(ctx)
-	if err != nil {
-		return err
-	}
-	return db.Exec(setConfigSQL, org.String()).Error
+// ReadScoped runs fn inside a single tenant-stamped transaction — the sanctioned
+// way to execute a cursor-style read (Raw().Scan / Row() / Rows()) or any bare
+// read that must be tenant-scoped without going through a service's write-path
+// TransactionManager. It BEGINs a transaction, stamps the tenant GUC on it (same
+// resolution + fail-closed policy as Stamp; a system context runs the tx WITHOUT
+// a stamp, under the BYPASSRLS role), marks the ctx WithStamped so the Enforce
+// plugin does not re-stamp the inner statements, runs fn on that transaction, and
+// commits (or rolls back on error). Because the cursor now lives inside a tx that
+// outlives it, the ErrCursorOutsideTx hazard cannot occur.
+//
+// Read-only by convention. Writes must keep using the service TransactionManager
+// (so the outbox write rides the same tx, root §19) — ReadScoped is for reads.
+func ReadScoped(ctx context.Context, db *gorm.DB, fn func(tx *gorm.DB) error) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := Stamp(ctx, tx); err != nil {
+			return err
+		}
+		return fn(tx.WithContext(WithStamped(ctx)))
+	})
 }

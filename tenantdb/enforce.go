@@ -79,15 +79,21 @@ type txHolder struct {
 // fail-closed policy is identical to Stamp — an unresolvable or unauthorized org
 // aborts the statement with the sentinel error.
 //
-// VERIFICATION STATUS: the org-resolution + fail-closed core (Stamp / StampConn)
-// is unit-tested. This plugin's transaction-wrap path exercises Postgres-only
-// SQL (set_config) and the database/sql tx machinery, so it is proven by an
-// integration test against real Postgres (enforce_integration_test.go, build tag
-// `integration`), NOT by the unit run. Do NOT enable this plugin in a service
-// until that integration test passes on the server AND the service has tagged
-// its system/startup/health/migration paths with tenant.WithSystemContext (they
-// have no principal and would otherwise fail closed). See the task report's
-// NEEDS-DECISION on enforcement strategy.
+// Cursor reads (Raw().Scan / Row() / Rows()) are handled separately by
+// beforeRowStatement, which never self-wraps (it would force-close the caller's
+// cursor on Commit): it re-stamps an existing transaction or fails closed with
+// ErrCursorOutsideTx. Wrap such reads in tenantdb.ReadScoped or the service's
+// TransactionManager.
+//
+// VERIFICATION STATUS: the org-resolution + fail-closed core (resolveOrg, shared
+// with Stamp) is unit-tested. This plugin's transaction-wrap path exercises
+// Postgres-only SQL (set_config) and the database/sql tx machinery, so it is
+// proven by an integration test against real Postgres (enforce_integration_test.go,
+// build tag `integration`), NOT by the unit run. Do NOT enable this plugin in a
+// service until that integration test passes on the server AND the service has
+// tagged its system/startup/health/migration paths with tenant.WithSystemContext
+// (they have no principal and would otherwise fail closed) AND its cursor reads
+// are wrapped (grep Raw().Scan / Row() / Rows()).
 func Enforce() gorm.Plugin { return enforcePlugin{} }
 
 type enforcePlugin struct{}
@@ -103,8 +109,13 @@ func (enforcePlugin) Initialize(db *gorm.DB) error {
 	}{
 		{c.Query().Before("gorm:query").Register, "tenantdb:before_query", beforeStatement},
 		{c.Query().After("gorm:query").Register, "tenantdb:after_query", afterStatement},
-		{c.Row().Before("gorm:row").Register, "tenantdb:before_row", beforeStatement},
-		{c.Row().After("gorm:row").Register, "tenantdb:after_row", afterStatement},
+		// Row processor (Raw().Scan / Row() / Rows()) uses a DEDICATED handler and
+		// registers NO after-callback: GORM hands the caller the still-open cursor
+		// AFTER this chain returns, so a self-wrapping tx (whose after-callback would
+		// Commit here) would force-close the rows before they are read. See
+		// beforeRowStatement — it never self-wraps; it either re-stamps an existing
+		// tx or fails closed (ErrCursorOutsideTx).
+		{c.Row().Before("gorm:row").Register, "tenantdb:before_row", beforeRowStatement},
 		{c.Raw().Before("gorm:raw").Register, "tenantdb:before_raw", beforeStatement},
 		{c.Raw().After("gorm:raw").Register, "tenantdb:after_raw", afterStatement},
 		{c.Create().Before("gorm:create").Register, "tenantdb:before_create", beforeStatement},
@@ -175,6 +186,52 @@ func beforeStatement(db *gorm.DB) {
 	}
 	db.Set(txHolderSettingKey, &txHolder{tx: tx, restore: db.Statement.ConnPool})
 	db.Statement.ConnPool = tx
+}
+
+// beforeRowStatement stamps the tenant GUC for a cursor-style read — the Row
+// processor backs Raw().Scan(), Row() and Rows(), where GORM hands the caller a
+// live *sql.Rows/*sql.Row consumed AFTER this callback chain returns. It must
+// therefore NEVER open a self-wrapping transaction: a wrapping tx would have to
+// Commit in an after-callback, and database/sql's Tx.Commit force-closes any
+// still-open rows first, so the cursor would die on read with "context
+// cancelled". Instead:
+//
+//   - System context / already sanctioned-stamped (WithStamped) → skip, exactly
+//     like beforeStatement.
+//   - Inside a live transaction (the caller wrapped the read in
+//     tenantdb.ReadScoped, a TxManager.WithTransaction, or a repo's own
+//     .Transaction(...)) → re-exec set_config directly on that tx. The caller's
+//     transaction outlives the cursor, so this is safe, transaction-local, and
+//     idempotent. (WithStamped already short-circuits the ReadScoped/TxManager
+//     case; this covers an unsanctioned repo tx.)
+//   - Bare pool, no surrounding transaction → FAIL CLOSED with ErrCursorOutsideTx.
+//     The read must be wrapped (tenantdb.ReadScoped or the TransactionManager) so
+//     the cursor lives inside a stamped transaction. Failing loudly at the exact
+//     call site beats returning a cursor that dies on first read.
+func beforeRowStatement(db *gorm.DB) {
+	ctx := db.Statement.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if tenant.IsSystemContext(ctx) {
+		return
+	}
+	if isStamped(ctx) {
+		return
+	}
+	pool, inTx := db.Statement.ConnPool.(committerPool)
+	if !inTx {
+		_ = db.AddError(ErrCursorOutsideTx)
+		return
+	}
+	org, err := resolveOrg(ctx)
+	if err != nil {
+		_ = db.AddError(err)
+		return
+	}
+	if _, err := pool.ExecContext(ctx, pgSetConfigSQL, org.String()); err != nil {
+		_ = db.AddError(err)
+	}
 }
 
 // afterStatement commits (or rolls back on error) the wrapping transaction and

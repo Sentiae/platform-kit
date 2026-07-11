@@ -4,6 +4,7 @@ package tenantdb
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/sentiae/platform-kit/tenant"
@@ -11,56 +12,109 @@ import (
 	"gorm.io/gorm"
 )
 
-// TestEnforcePluginStampsNonTxStatement proves the Enforce plugin wraps a bare
-// (non-transactional) statement in a GUC-stamped transaction against real
-// Postgres: after a plain read, current_setting('app.current_org') reflects the
-// resolved org, and a system context leaves it unset. Postgres-only because
-// set_config / current_setting and the tx machinery are exercised for real.
-//
-// Run: go test -tags=integration ./tenantdb/... (needs Docker for testcontainers).
-func TestEnforcePluginStampsNonTxStatement(t *testing.T) {
+// pinSingleConn forces the pool to one physical connection so a "no bleed" check
+// is a real same-connection assertion (the next statement provably reuses the
+// connection ReadScoped/the plugin just released).
+func pinSingleConn(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("get sql.DB: %v", err)
+	}
+	sqlDB.SetMaxOpenConns(1)
+}
+
+// TestEnforcePluginCursorReads proves the beforeRowStatement contract against
+// real Postgres: a bare cursor read (Raw().Scan) fails closed with
+// ErrCursorOutsideTx, the same read wrapped in ReadScoped succeeds with the GUC
+// visible inside, and the transaction-local GUC does NOT bleed onto the pooled
+// connection afterward. Postgres-only (set_config/current_setting + the tx
+// machinery are exercised for real). Run: go test -tags=integration ./tenantdb/...
+func TestEnforcePluginCursorReads(t *testing.T) {
 	db := testutil.NewTestDB(t, "")
+	pinSingleConn(t, db)
 	if err := db.Use(Enforce()); err != nil {
 		t.Fatalf("use plugin: %v", err)
 	}
 
-	// Authorized read: the plugin must set app.current_org for the statement.
 	ctx := tenant.WithActiveOrg(principalCtx(context.Background(), orgA), orgA)
-	var got string
-	// A raw read that returns the GUC observed on the same wrapped transaction.
-	if err := db.WithContext(ctx).Raw("SELECT current_setting('app.current_org', true)").Scan(&got).Error; err != nil {
-		t.Fatalf("read GUC: %v", err)
-	}
-	if got != orgA.String() {
-		t.Fatalf("app.current_org = %q, want %q", got, orgA.String())
+
+	// (c) A bare cursor read (Row processor) on the pool must fail closed — the
+	// plugin cannot self-wrap it without force-closing the cursor on Commit.
+	var dead string
+	err := db.WithContext(ctx).Raw("SELECT current_setting('app.current_org', true)").Scan(&dead).Error
+	if !errors.Is(err, ErrCursorOutsideTx) {
+		t.Fatalf("bare cursor read: err = %v, want ErrCursorOutsideTx", err)
 	}
 
-	// Unauthorized active org: the statement must fail closed.
-	badCtx := tenant.WithActiveOrg(principalCtx(context.Background(), orgA), orgB)
-	var x string
-	err := db.WithContext(badCtx).Raw("SELECT current_setting('app.current_org', true)").Scan(&x).Error
-	if err == nil {
-		t.Fatal("expected fail-closed error for unauthorized active org")
+	// (d) The same read wrapped in ReadScoped succeeds; the GUC is the resolved org
+	// inside the scoped transaction.
+	var inside string
+	if err := ReadScoped(ctx, db, func(tx *gorm.DB) error {
+		return tx.Raw("SELECT current_setting('app.current_org', true)").Scan(&inside).Error
+	}); err != nil {
+		t.Fatalf("ReadScoped read: %v", err)
+	}
+	if inside != orgA.String() {
+		t.Fatalf("in-scope app.current_org = %q, want %q", inside, orgA.String())
 	}
 
-	// System context: no stamp; the GUC stays empty.
+	// (d, no bleed) On the SAME pooled connection (MaxOpenConns=1), a subsequent
+	// system-context read sees an EMPTY GUC — ReadScoped's tx-local stamp was reset
+	// on commit and cannot ride the connection into the next borrower.
 	sysCtx := tenant.WithSystemContext(context.Background())
-	var sys string
-	if err := db.WithContext(sysCtx).Raw("SELECT current_setting('app.current_org', true)").Scan(&sys).Error; err != nil {
-		t.Fatalf("system read: %v", err)
+	var after string
+	if err := db.WithContext(sysCtx).Raw("SELECT current_setting('app.current_org', true)").Scan(&after).Error; err != nil {
+		t.Fatalf("system read after ReadScoped: %v", err)
 	}
-	if sys != "" {
-		t.Fatalf("system context must not stamp; got %q", sys)
+	if after != "" {
+		t.Fatalf("GUC bled onto the pooled connection: got %q, want empty", after)
 	}
 }
 
-// TestEnforcePluginRestampsUnsanctionedTx proves the Enforce plugin re-stamps a
-// statement running inside a repository's OWN GORM .Transaction(...) — a tx the
-// TxManager Stamp never covered — using a process-internal system-org ctx (a
-// kafka consumer / per-org job). Inside the transaction the GUC must reflect the
-// system org; a NON-system ctx with NO org resolvable must fail closed.
-//
-// Run: go test -tags=integration ./tenantdb/... (needs Docker for testcontainers).
+// TestEnforcePluginQueryFailClosed proves the Query path (Find) self-wraps and
+// fails closed: a read with no resolvable org aborts with ErrNoActiveOrg, and a
+// spoofed active org (a principal for orgA asking to act in orgB) aborts with
+// ErrOrgNotAuthorized. Neither ever runs unstamped.
+func TestEnforcePluginQueryFailClosed(t *testing.T) {
+	db := testutil.NewTestDB(t, "")
+	// Create the table BEFORE installing the plugin — once Enforce is active a bare
+	// DDL Exec with no org context fail-closes (which is exactly why services tag
+	// their migration/DDL paths with tenant.WithSystemContext).
+	if err := db.Exec("CREATE TABLE t_fc (organization_id uuid)").Error; err != nil {
+		t.Fatalf("create table: %v", err)
+	}
+	if err := db.Use(Enforce()); err != nil {
+		t.Fatalf("use plugin: %v", err)
+	}
+
+	// (b) No org resolvable (no principal, no active org, no system org).
+	var rows []fcRow
+	err := db.WithContext(context.Background()).Find(&rows).Error
+	if !errors.Is(err, ErrNoActiveOrg) {
+		t.Fatalf("no-org Find: err = %v, want ErrNoActiveOrg", err)
+	}
+
+	// (g) Spoofed active org: principal is authorized for orgA, requests orgB.
+	badCtx := tenant.WithActiveOrg(principalCtx(context.Background(), orgA), orgB)
+	err = db.WithContext(badCtx).Find(&rows).Error
+	if !errors.Is(err, ErrOrgNotAuthorized) {
+		t.Fatalf("spoofed active-org Find: err = %v, want ErrOrgNotAuthorized", err)
+	}
+}
+
+type fcRow struct {
+	OrganizationID string `gorm:"column:organization_id"`
+}
+
+func (fcRow) TableName() string { return "t_fc" }
+
+// TestEnforcePluginRestampsUnsanctionedTx proves the plugin re-stamps a statement
+// running inside a repository's OWN GORM .Transaction(...) — a tx the TxManager
+// Stamp never covered — using a process-internal system-org ctx (a kafka consumer
+// / per-org job). A cursor read INSIDE that tx is safe (the caller's tx outlives
+// the cursor), so the GUC reflects the system org; a NON-system ctx with NO org
+// resolvable must fail closed.
 func TestEnforcePluginRestampsUnsanctionedTx(t *testing.T) {
 	db := testutil.NewTestDB(t, "")
 	if err := db.Use(Enforce()); err != nil {
@@ -68,8 +122,9 @@ func TestEnforcePluginRestampsUnsanctionedTx(t *testing.T) {
 	}
 
 	// A repo opens its own transaction outside WithTransaction (no WithStamped
-	// marker). Under a system-org ctx the plugin re-stamps each statement, so the
-	// GUC inside the tx reflects the system org.
+	// marker). Under a system-org ctx the plugin re-stamps each statement on the
+	// tx, so the GUC inside reflects the system org — and the cursor read is safe
+	// because it lives inside the caller's transaction.
 	sysOrgCtx := tenant.WithSystemOrg(context.Background(), orgA)
 	err := db.WithContext(sysOrgCtx).Transaction(func(tx *gorm.DB) error {
 		var got string

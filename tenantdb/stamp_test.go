@@ -169,32 +169,3 @@ func TestStamp(t *testing.T) {
 	}
 }
 
-func TestStampConn(t *testing.T) {
-	db, rec := newRecordingDB(t)
-	ctx := tenant.WithActiveOrg(principalCtx(context.Background(), orgA), orgA)
-
-	if err := StampConn(ctx, db); err != nil {
-		t.Fatalf("StampConn() err = %v", err)
-	}
-	if len(rec.records) != 1 {
-		t.Fatalf("want 1 exec, got %d", len(rec.records))
-	}
-	if rec.records[0].sql != setConfigSQL {
-		t.Fatalf("SQL = %q, want %q", rec.records[0].sql, setConfigSQL)
-	}
-	if got := rec.records[0].vars[0]; got != orgA.String() {
-		t.Fatalf("org = %v, want %s", got, orgA.String())
-	}
-}
-
-func TestStampConnSystemContextSkips(t *testing.T) {
-	db, rec := newRecordingDB(t)
-	ctx := tenant.WithSystemContext(principalCtx(context.Background(), orgA))
-
-	if err := StampConn(ctx, db); err != nil {
-		t.Fatalf("StampConn() err = %v", err)
-	}
-	if len(rec.records) != 0 {
-		t.Fatalf("system context must not stamp, got %+v", rec.records)
-	}
-}
