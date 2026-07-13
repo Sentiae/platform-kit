@@ -32,6 +32,14 @@ func MeshSVIDAuthzStrict() bool {
 	return boolEnv("APP_MESH_SVID_AUTHZ_STRICT", false)
 }
 
+// OrgEnforce reports whether the D-061 verified-org boundary enforces (vs
+// shadows) org-authorization decisions, from APP_AUTH_ORG_ENFORCE. Default
+// false = shadow (log divergence, do not enforce); true = enforce (the
+// D-070/D-071 flip-via-boot-flag), turning a would-deny into a real error.
+func OrgEnforce() bool {
+	return boolEnv("APP_AUTH_ORG_ENFORCE", false)
+}
+
 // MeshServiceGrantsJSON returns the raw APP_MESH_SERVICE_GRANTS JSON override
 // (empty when unset). The mesh-policy loader in tenant parses and merges it
 // over the embedded default.
