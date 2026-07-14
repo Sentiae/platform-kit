@@ -867,6 +867,15 @@ const (
 	EventIdentityInvitationRevoked  = "identity.invitation.revoked"
 )
 
+// ---------- Platform domain ---------------------------------------------
+
+const (
+	// EventPlatformStorageMetered is the D-109 per-org storage consumption
+	// meter emitted by registry-service on every OCI push/delete. The wire
+	// topic is "sentiae.platform.storage.metered".
+	EventPlatformStorageMetered = "platform.storage.metered"
+)
+
 // RegisteredEvent describes a platform event's shape and ownership.
 type RegisteredEvent struct {
 	Type        string // bare event type (e.g., "work.spec.created")
@@ -1976,6 +1985,10 @@ var registeredEvents = []RegisteredEvent{
 	// audit domain
 	{EventAuditReplayExecuted, "audit", "An admin replayed a batch of audited events", "pulse-service",
 		dataSchema("audit.replay.executed", nil, `"replayed_event":{"type":"string"},"payload":{"type":"string"}`)},
+
+	// ---- Platform ----------------------------------------------------
+	{EventPlatformStorageMetered, "platform", "D-109 per-org OCI storage consumption meter (logical bytes reachable under the acting org)", "registry-service",
+		dataSchema("platform.storage.metered", []string{"org_id", "bytes"}, `"org_id":{"type":"string"},"bytes":{"type":"integer"}`)},
 }
 
 // registry is the package-level lookup table. It is built once at init.
