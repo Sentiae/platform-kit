@@ -200,6 +200,92 @@ func (r *ScopedEnvelopeVaultResolver) scopedClient(ctx context.Context, policyOr
 	return child, nil
 }
 
+// HandedTokenEnvelopeResolver is the D-125 execution of D-089: it holds NO
+// standing Vault capability and NEVER mints. Where ScopedEnvelopeVaultResolver
+// mints a per-org child token on every Resolve (svc/runtime's standing
+// mint-any-org capability), this resolver instead runs the KV-read +
+// Transit-decrypt under a per-deployment token the CALLER hands in on
+// principal.Token — a token minted once by the control plane (delivery),
+// scoped to a single org, and handed to the fleet host alongside the
+// descriptor. The fleet host is a bearer, never a minter: a stolen host
+// credential can no longer mint a child for any org.
+//
+// It clones a base Vault client (address + TLS from the standard VAULT_* env,
+// via vault.DefaultConfig), sets the handed token on the clone, and reuses the
+// exact scopedKV + unsealBlob legs ScopedEnvelopeVaultResolver runs after its
+// mint. authorizeRef (I28) stays as defense-in-depth: a bug that handed an
+// A-org token for a B-org ref is refused by authorizeRef, and even if that were
+// bypassed the A-scoped token hits decrypt/tenant-B and Vault returns 403.
+type HandedTokenEnvelopeResolver struct {
+	base         *vault.Client
+	kvMount      string
+	transitMount string
+}
+
+// NewHandedTokenEnvelopeResolver builds the handed-token resolver. It reads the
+// Vault address + TLS from the standard VAULT_* env (vault.DefaultConfig) — the
+// same env pkconfig.NewFromEnv reads — and holds NO token: the token arrives
+// per-call on principal.Token. A DefaultConfig failure leaves base nil and
+// every Resolve fails closed. kvMount / transitMount default to "secret" /
+// "transit-tenants".
+func NewHandedTokenEnvelopeResolver(kvMount, transitMount string) *HandedTokenEnvelopeResolver {
+	if kvMount == "" {
+		kvMount = "secret"
+	}
+	if transitMount == "" {
+		transitMount = "transit-tenants"
+	}
+	// A nil/failed client is a valid state — Resolve fails closed. Never panic at
+	// construction (mirrors the runtime's degrade-not-crash secret wiring).
+	base, _ := vault.NewClient(vault.DefaultConfig())
+	return &HandedTokenEnvelopeResolver{
+		base:         base,
+		kvMount:      kvMount,
+		transitMount: transitMount,
+	}
+}
+
+var _ Resolver = (*HandedTokenEnvelopeResolver)(nil)
+
+// Resolve authorizes (I28), then runs the single KV-read + Transit decrypt under
+// the caller-handed token (principal.Token). A missing token or unbuildable
+// client fails closed (no value) — the resolver never falls back to any standing
+// capability. The handed token is never logged (Principal.String redacts it).
+func (r *HandedTokenEnvelopeResolver) Resolve(ctx context.Context, secretRef string, principal Principal) (SecretValue, error) {
+	org, path, field, err := authorizeRef(ctx, secretRef, principal)
+	if err != nil {
+		return SecretValue{}, err
+	}
+	if r.base == nil {
+		return SecretValue{}, fmt.Errorf("secret: resolve %s: vault client unavailable", secretRef)
+	}
+	if principal.Token == "" {
+		logger.FromContext(ctx).Warn("secret resolve denied: no handed token",
+			"secret_ref", secretRef, "principal", principal.String())
+		return SecretValue{}, fmt.Errorf("secret: resolve %s: no handed vault token", secretRef)
+	}
+
+	client, err := r.base.Clone()
+	if err != nil {
+		return SecretValue{}, fmt.Errorf("secret: resolve %s: clone vault client: %w", secretRef, err)
+	}
+	client.SetToken(principal.Token)
+	if ns := r.base.Namespace(); ns != "" {
+		client.SetNamespace(ns)
+	}
+
+	kek, err := NewTenantTransit(client, TransitConfig{
+		Mount:      r.transitMount,
+		KeyPrefix:  "tenant-",
+		AutoCreate: false,
+	})
+	if err != nil {
+		return SecretValue{}, fmt.Errorf("secret: resolve %s: %w", secretRef, err)
+	}
+
+	return unsealBlob(ctx, scopedKV{client: client, mount: r.kvMount}, kek, org, path, field, secretRef, principal)
+}
+
 // scopedKV reads a single field from a KV v2 secret under a specific Vault
 // client + mount. It exists so the scoped resolver can run the KV read under a
 // per-org child token (the standing config.VaultClient is bound to the standing

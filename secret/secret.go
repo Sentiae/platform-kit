@@ -49,6 +49,14 @@ type Principal struct {
 	Service string // the resolving service, e.g. "delivery", "runtime-fleet", "node-service"
 	Subject string // optional: the acting user/agent id
 	OrgID   string // REQUIRED + ENFORCED: the caller's verified tenant (org uuid)
+
+	// Token is an OPTIONAL per-deployment Vault token the caller hands to a
+	// HandedTokenEnvelopeResolver (D-125): the resolver runs the KV-read +
+	// Transit-decrypt under this token instead of minting one, so the resolving
+	// host holds no standing mint-any capability. It is a live credential — it is
+	// NEVER included in String()/logs (redacted below), NEVER persisted, and is
+	// ignored by every resolver that mints its own scoped token.
+	Token string
 }
 
 func (p Principal) String() string {
@@ -59,6 +67,8 @@ func (p Principal) String() string {
 	if p.OrgID != "" {
 		s += "@" + p.OrgID
 	}
+	// Token is a live credential — never rendered. Its presence is not even
+	// signalled, so an audit line can never leak it.
 	return s
 }
 

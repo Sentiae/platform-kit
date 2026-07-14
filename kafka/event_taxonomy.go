@@ -693,6 +693,13 @@ const (
 	// and persists a TestRun template linked back to the trace.
 	EventOpsTraceCapturedForRegression = "ops.trace.captured_for_regression"
 	EventRuntimeRegressionTestCreated  = "runtime.regression_test.created"
+
+	// Per-deployment credential grant audit (D-125 R3). Emitted by
+	// delivery-service (the durable outbox-equipped control plane that mints the
+	// credential) at Provision, recording who was granted access to what at grant
+	// time. NEVER carries the token/secret value — only the deployment identity,
+	// org, principal, credential_kind, and ttl.
+	EventRuntimeCredentialMinted = "runtime.credential.minted"
 )
 
 // ---------- Saga domain --------------------------------------------------
@@ -1485,6 +1492,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("ops.trace.captured_for_regression", []string{"trace_id", "service_id"}, `"trace_id":{"type":"string"},"service_id":{"type":"string"},"organization_id":{"type":"string"}`)},
 	{EventRuntimeRegressionTestCreated, "runtime", "A regression test was generated from a production trace", "runtime-service",
 		dataSchema("runtime.regression_test.created", []string{"trace_id", "test_run_id"}, `"trace_id":{"type":"string"},"test_run_id":{"type":"string"},"language":{"type":"string"},"framework":{"type":"string"}`)},
+	{EventRuntimeCredentialMinted, "runtime", "delivery minted a per-deployment scoped credential (Vault secret-broker token) and handed it to the fleet (D-125 audit; never carries the token value)", "delivery-service",
+		dataSchema("runtime.credential.minted", []string{"component_id", "env", "org", "credential_kind"}, `"deploy_id":{"type":"string"},"component_id":{"type":"string"},"env":{"type":"string"},"org":{"type":"string"},"principal":{"type":"string"},"credential_kind":{"type":"string"},"ttl_seconds":{"type":"integer"}`)},
 
 	// Foundry ------------------------------------------------------------
 	{EventFoundryAgentStarted, "foundry", "An agent loop started", "foundry-service",
