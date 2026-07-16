@@ -1245,8 +1245,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("delivery.deploy.verified", []string{"deploy_id"}, `"deploy_id":{"type":"string"},"healthy":{"type":"boolean"}`)},
 	{EventDeliveryRetargetCompleted, "delivery", "delivery retargeted a component×environment to a new class", "delivery-service",
 		dataSchema("delivery.retarget.completed", []string{"component_id", "env"}, `"component_id":{"type":"string"},"env":{"type":"string"},"from_target":{"type":"string"},"to_target":{"type":"string"}`)},
-	{EventDeliverySecurityBlocked, "delivery", "the SEC-04 gate refused a release (critical findings, a failed/timed-out scan, or an unverified supply chain)", "delivery-service",
-		dataSchema("delivery.security.blocked", []string{"component_id"}, `"component_id":{"type":"string"},"env":{"type":"string"},"image_ref":{"type":"object"},"reason":{"type":"string"},"findings_critical":{"type":"integer"},"scan_id":{"type":"string"}`)},
+	{EventDeliverySecurityBlocked, "delivery", "the SEC-04 gate refused a release (findings at or above the resolved severity threshold, a failed/timed-out scan, or an unverified supply chain)", "delivery-service",
+		dataSchema("delivery.security.blocked", []string{"component_id"}, `"component_id":{"type":"string"},"env":{"type":"string"},"image_ref":{"type":"object"},"reason":{"type":"string"},"findings_critical":{"type":"integer"},"findings_high":{"type":"integer"},"findings_medium":{"type":"integer"},"findings_low":{"type":"integer"},"severity_threshold":{"type":"string"},"scan_id":{"type":"string"}`)},
 
 	// Catalog — system-model lifecycle (emitted by catalog via its outbox).
 	{EventCatalogComponentLifecycleChanged, "catalog", "A component's lifecycle advanced (planned→building→testing→live)", "catalog-service",
