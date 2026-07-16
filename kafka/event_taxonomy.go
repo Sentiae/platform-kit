@@ -361,6 +361,14 @@ const (
 	EventCatalogComponentLifecycleChanged = "catalog.component.lifecycle_changed"
 	EventCatalogArchApplied               = "catalog.arch.applied"
 
+	// CloudEnvironment lifecycle (system-deployment §12-A, D-128; event-catalog.md).
+	// All four share the wire topic sentiae.catalog.cloud_environment, keyed by the
+	// environment id. credential_minted is task #12's (ops mint) — not defined here.
+	EventCatalogCloudEnvironmentConnected = "catalog.cloud_environment.connected"
+	EventCatalogCloudEnvironmentValidated = "catalog.cloud_environment.validated"
+	EventCatalogCloudEnvironmentDegraded  = "catalog.cloud_environment.degraded"
+	EventCatalogCloudEnvironmentRevoked   = "catalog.cloud_environment.revoked"
+
 	// D-052 successors of the extracted legacy ops.service.* /
 	// ops.ownership.changed / ops.component.body_edited events. catalog
 	// dual-emits both the legacy type and its successor during the migration
@@ -1224,7 +1232,7 @@ var registeredEvents = []RegisteredEvent{
 
 	// Delivery — the build→deploy→operate spine (consumed by catalog).
 	{EventDeliveryImageBuilt, "delivery", "delivery built a container image for a component", "delivery-service",
-		dataSchema("delivery.image.built", []string{"component_id"}, `"component_id":{"type":"string"},"commit_sha":{"type":"string"},"image_ref":{"type":"object"}`)},
+		dataSchema("delivery.image.built", []string{"component_id"}, `"component_id":{"type":"string"},"commit_sha":{"type":"string"},"image_ref":{"type":"object"},"signature_digest":{"type":"string"},"attestation_digest":{"type":"string"},"signing_key_version":{"type":"integer"}`)},
 	{EventDeliveryTestCompleted, "delivery", "delivery finished the test stage for a built image", "delivery-service",
 		dataSchema("delivery.test.completed", []string{"component_id"}, `"component_id":{"type":"string"},"image_ref":{"type":"object"},"passed":{"type":"boolean"},"coverage":{"type":"number"},"report_ref":{"type":"string"}`)},
 	{EventDeliveryDeployCompleted, "delivery", "delivery finished deploying a component to an environment", "delivery-service",
@@ -1239,6 +1247,18 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("catalog.component.lifecycle_changed", []string{"component_id", "from", "to"}, `"component_id":{"type":"string"},"from":{"type":"string"},"to":{"type":"string"}`)},
 	{EventCatalogArchApplied, "catalog", "An architecture graph was applied onto a component", "catalog-service",
 		dataSchema("catalog.arch.applied", []string{"graph_id"}, `"graph_id":{"type":"string"},"component_ids":{"type":"array"},"feature_component_pairs":{"type":"array"}`)},
+
+	// CloudEnvironment lifecycle (system-deployment §12-A, D-128; emitted by catalog
+	// via its outbox). All four ride the wire topic sentiae.catalog.cloud_environment,
+	// keyed by the environment id.
+	{EventCatalogCloudEnvironmentConnected, "catalog", "A customer cloud was connected (CloudEnvironment created)", "catalog-service",
+		dataSchema("catalog.cloud_environment.connected", []string{"cloud_environment_id", "provider"}, `"cloud_environment_id":{"type":"string"},"provider":{"type":"string"},"auth_mode":{"type":"string"},"mode":{"type":"string"},"status":{"type":"string"}`)},
+	{EventCatalogCloudEnvironmentValidated, "catalog", "A CloudEnvironment passed its least-privilege validation probe", "catalog-service",
+		dataSchema("catalog.cloud_environment.validated", []string{"cloud_environment_id", "provider"}, `"cloud_environment_id":{"type":"string"},"provider":{"type":"string"},"auth_mode":{"type":"string"},"mode":{"type":"string"},"status":{"type":"string"}`)},
+	{EventCatalogCloudEnvironmentDegraded, "catalog", "A CloudEnvironment's validation probe failed (connection unhealthy)", "catalog-service",
+		dataSchema("catalog.cloud_environment.degraded", []string{"cloud_environment_id", "provider"}, `"cloud_environment_id":{"type":"string"},"provider":{"type":"string"},"auth_mode":{"type":"string"},"mode":{"type":"string"},"status":{"type":"string"}`)},
+	{EventCatalogCloudEnvironmentRevoked, "catalog", "A CloudEnvironment was revoked (terminal)", "catalog-service",
+		dataSchema("catalog.cloud_environment.revoked", []string{"cloud_environment_id", "provider"}, `"cloud_environment_id":{"type":"string"},"provider":{"type":"string"},"auth_mode":{"type":"string"},"mode":{"type":"string"},"status":{"type":"string"}`)},
 
 	// D-052 successors of the legacy ops.service.* / ops.ownership.changed /
 	// ops.component.body_edited events (dual-emitted by catalog during the
