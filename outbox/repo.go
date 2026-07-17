@@ -37,6 +37,16 @@ type outboxModel struct {
 // TableName pins the model to the constitution's outbox_messages table (§19).
 func (outboxModel) TableName() string { return "outbox_messages" }
 
+// AutoMigrate creates or updates the outbox_messages table (status ladder,
+// per-row max_retries, next_retry_at, and the due index) via GORM. It exists
+// for services whose schema is built by GORM AutoMigrate rather than a runnable
+// golang-migrate directory (e.g. identity-service), so they can adopt the shared
+// outbox without a migration file. Services that DO run migrations should add a
+// migration instead.
+func AutoMigrate(db *gorm.DB) error {
+	return db.AutoMigrate(&outboxModel{})
+}
+
 // GormRepo is the GORM-backed Repo (and therefore Writer). It is the single
 // concrete type an adopting service wires.
 type GormRepo struct {
