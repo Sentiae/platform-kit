@@ -856,6 +856,13 @@ const (
 	EventAuditReplayExecuted = "audit.replay.executed"
 )
 
+// ---------- Admin domain (cross-service admin-action audit) --------------
+
+// EventAdminActionRecorded is the cross-service admin-action audit event
+// emitted by platform-kit/audit.Recorder from every service and fanned-in by
+// ops-service into admin_audit_log_central.
+const EventAdminActionRecorded = "admin.action.recorded"
+
 // ---------- Identity domain ---------------------------------------------
 
 const (
@@ -2020,6 +2027,10 @@ var registeredEvents = []RegisteredEvent{
 	// audit domain
 	{EventAuditReplayExecuted, "audit", "An admin replayed a batch of audited events", "pulse-service",
 		dataSchema("audit.replay.executed", nil, `"replayed_event":{"type":"string"},"payload":{"type":"string"}`)},
+
+	// admin domain
+	{EventAdminActionRecorded, "admin", "A cross-service admin action was recorded by platform-kit/audit.Recorder", "ops-service",
+		dataSchema("admin.action.recorded", []string{"event_id", "service", "action", "created_at"}, `"event_id":{"type":"string"},"service":{"type":"string"},"action":{"type":"string"},"created_at":{"type":"string"},"actor_email":{"type":"string"},"ip_address":{"type":"string"},"user_agent":{"type":"string"},"action_meta":{"type":"object"}`)},
 
 	// ---- Platform ----------------------------------------------------
 	{EventPlatformStorageMetered, "platform", "D-109 per-org OCI storage consumption meter (logical bytes reachable under the acting org)", "registry-service",

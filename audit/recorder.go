@@ -1,7 +1,7 @@
 // Package audit provides the shared admin-action audit recorder used by
 // every Sentiae service. It writes a durable per-service log row via the
 // supplied GORM DB and simultaneously publishes a CloudEvent on the
-// Kafka topic `sentiae.admin.action.recorded` so a central aggregator
+// Kafka topic `sentiae.admin.action` so a central aggregator
 // (ops-service) can fan-in into a cross-service view for platform
 // admins. Closes FEATURES.md §18.1 "Audit log — every admin action is
 // recorded" and §18.2 global admin telemetry.
@@ -133,11 +133,14 @@ type Recorder interface {
 }
 
 // Topic is the Kafka topic the recorder publishes to. Fixed so the
-// aggregator consumer can subscribe without configuration.
-const Topic = "sentiae.admin.action.recorded"
+// aggregator consumer can subscribe without configuration. It equals the
+// taxonomy-derived topic for EventType — the first two segments of the
+// event type (kafka.RegisteredEvent.FullTopic("sentiae")).
+const Topic = "sentiae.admin.action"
 
-// EventType is the CloudEvent type for recorded actions.
-const EventType = "admin.action.recorded"
+// EventType is the CloudEvent type for recorded actions. Bound to the
+// taxonomy constant so the two can't drift.
+const EventType = kafka.EventAdminActionRecorded
 
 // recorder is the default Recorder implementation.
 type recorder struct {

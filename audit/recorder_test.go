@@ -137,6 +137,20 @@ func TestRecorder_PublishError(t *testing.T) {
 	}
 }
 
+// TestTopicMatchesTaxonomyDerivation would have caught BOTH breaks behind
+// #audit-never-worked: an unregistered event type (100% publish rejection)
+// and a Topic that doesn't equal the taxonomy-derived wire topic.
+func TestTopicMatchesTaxonomyDerivation(t *testing.T) {
+	t.Parallel()
+	e, ok := kafka.LookupEvent(audit.EventType)
+	if !ok {
+		t.Fatalf("EventType %q not registered in the taxonomy", audit.EventType)
+	}
+	if got := e.FullTopic("sentiae"); got != audit.Topic {
+		t.Fatalf("Topic %q != taxonomy-derived %q", audit.Topic, got)
+	}
+}
+
 func TestNoopRecorder(t *testing.T) {
 	t.Parallel()
 	var r audit.Recorder = audit.Noop{}
