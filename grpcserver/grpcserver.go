@@ -8,12 +8,22 @@
 //     (via cmux), so peers may connect with or without an SVID on the same port.
 //   - strict     — one mTLS server only.
 //
-// SAFETY: identity-service and permission-service sit under the whole stack. A
-// SPIRE hiccup (nil Source when Mode != off) must never wedge them, so the
-// builder DEGRADES to plaintext-only and logs a warning rather than failing.
+// FAIL-CLOSED (D-162a L2): a security posture is never selected by the ABSENCE
+// of a value. "permissive" is the DECLARED escape hatch — a service that opts
+// into permissive tolerates plaintext by design, so a SPIRE hiccup (nil Source)
+// degrades it to plaintext-only rather than wedging it. "strict" means strict:
+// a strict service with no SVID source REFUSES TO SERVE rather than silently
+// serving unencrypted traffic while claiming to require mutual TLS. New records
+// that misconfiguration as a build error and Serve returns it before opening
+// the listener, so nothing insecure is ever served.
+//
+// If identity-service or permission-service must stay up through a SPIRE
+// outage, the honest mechanism is to run them "permissive" — never to let
+// "strict" secretly mean plaintext.
 package grpcserver
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
 
@@ -34,8 +44,9 @@ type Config struct {
 	// Empty is treated as "off". See config.MTLSMode.
 	Mode string
 
-	// Source is the SPIFFE X509 source used for the mTLS server. When nil and
-	// Mode != off the builder degrades to plaintext-only (see package doc).
+	// Source is the SPIFFE X509 source used for the mTLS server. When nil under
+	// "permissive" the builder degrades to plaintext-only; when nil under
+	// "strict" the builder refuses to serve (see package doc).
 	Source *workloadapi.X509Source
 
 	// ServiceName is the short service name (e.g. "identity"), used only for
@@ -56,12 +67,22 @@ type Builder struct {
 	// there is only one server, exactly one of these is set and the other nil.
 	plain *grpc.Server
 	mtls  *grpc.Server
+
+	// buildErr, when non-nil, marks a fail-closed-invalid configuration (strict
+	// mTLS required but no SVID source). No server is built; Serve returns this
+	// error before opening the listener so nothing insecure is ever served.
+	buildErr error
 }
 
 // New builds the server(s) for the given mode. The variadic opts are the
 // service's base server options (its ChainUnary/ChainStream interceptors and
-// any others); transport credentials are added by New per mode. New never
-// fails: if Mode != off but Source is nil, it degrades to plaintext-only.
+// any others); transport credentials are added by New per mode.
+//
+// New does not panic. Fail-closed (D-162a L2): "strict" with a nil Source is an
+// invalid configuration — New builds NO server and records a build error naming
+// the service and the problem; Serve returns that error before opening the
+// listener. "permissive" with a nil Source is the declared escape hatch and
+// degrades to plaintext-only (see package doc).
 func New(cfg Config, opts ...grpc.ServerOption) *Builder {
 	b := &Builder{serviceName: cfg.ServiceName}
 
@@ -70,9 +91,19 @@ func New(cfg Config, opts ...grpc.ServerOption) *Builder {
 		mode = config.MTLSModeOff
 	}
 
-	// Degrade any non-off mode with no source to plaintext-only.
-	if mode != config.MTLSModeOff && cfg.Source == nil {
-		slog.Default().Warn("grpcserver: mTLS mode requested but SPIFFE source unavailable; degrading to plaintext-only",
+	// FAIL-CLOSED: strict mTLS required but no SVID source. Refuse to serve
+	// rather than silently serving plaintext under a "strict" posture.
+	if mode == config.MTLSModeStrict && cfg.Source == nil {
+		b.buildErr = fmt.Errorf("grpcserver: service %q configured for strict mTLS but no SPIFFE/SVID source is available; refusing to serve (run in permissive mode if plaintext is acceptable during a SPIRE outage)", cfg.ServiceName)
+		slog.Default().Error("grpcserver: strict mTLS required but SPIFFE source unavailable; refusing to serve",
+			"service", cfg.ServiceName, "mode", mode)
+		return b
+	}
+
+	// Degrade permissive with no source to plaintext-only (the declared escape
+	// hatch — a SPIRE hiccup must not wedge a service that opted into it).
+	if mode == config.MTLSModePermissive && cfg.Source == nil {
+		slog.Default().Warn("grpcserver: permissive mTLS requested but SPIFFE source unavailable; degrading to plaintext-only",
 			"service", cfg.ServiceName, "mode", mode)
 		mode = config.MTLSModeOff
 	}
@@ -115,9 +146,11 @@ func (b *Builder) Registrar() grpc.ServiceRegistrar {
 
 // Server returns a primary underlying *grpc.Server for introspection only
 // (e.g. GetServiceInfo in tests). It is the plaintext server when present
-// (modes off/permissive) else the mTLS server (strict); nil only if no server
-// was built. Do NOT call Serve on it directly — use Builder.Serve so every
-// configured transport is served.
+// (modes off/permissive) else the mTLS server (strict); nil if no server was
+// built — including a fail-closed builder (strict mTLS with no SVID source),
+// which builds no server at all. Do NOT call Serve on it directly — use
+// Builder.Serve so every configured transport is served and so the fail-closed
+// build error is honored.
 func (b *Builder) Server() *grpc.Server {
 	if len(b.servers) == 0 {
 		return nil
@@ -130,6 +163,12 @@ func (b *Builder) Server() *grpc.Server {
 // server it serves directly; with two it multiplexes plaintext and TLS on the
 // single listener via cmux. Serve blocks until the listener is closed.
 func (b *Builder) Serve(lis net.Listener) error {
+	// Fail-closed: a poisoned builder (strict mTLS with no SVID source) never
+	// serves. Return before touching the listener so nothing insecure is served.
+	if b.buildErr != nil {
+		return b.buildErr
+	}
+
 	for _, srv := range b.servers {
 		ensureHealth(srv)
 		reflection.Register(srv)

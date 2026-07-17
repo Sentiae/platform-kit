@@ -1,7 +1,10 @@
 package grpcserver
 
 import (
+	"net"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/sentiae/platform-kit/config"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
@@ -48,11 +51,52 @@ func TestNew_PermissiveNilSource_DegradesToPlaintext(t *testing.T) {
 	}
 }
 
-func TestNew_StrictNilSource_DegradesToPlaintext(t *testing.T) {
-	b := New(Config{Mode: config.MTLSModeStrict, Source: nil, ServiceName: "test"})
-	if len(b.servers) != 1 || b.plain == nil || b.mtls != nil {
-		t.Fatalf("strict+nil source should degrade to plaintext-only: servers=%d plain=%v mtls=%v",
-			len(b.servers), b.plain != nil, b.mtls != nil)
+func TestNew_StrictNilSource_RefusesToServe(t *testing.T) {
+	// Fail-closed (D-162a L2): strict mTLS with no SVID source must NOT serve
+	// plaintext. New builds no server and Serve returns a diagnostic error
+	// before ever accepting traffic.
+	b := New(Config{Mode: config.MTLSModeStrict, Source: nil, ServiceName: "identity"})
+
+	// Nothing insecure was built: no server was handed out.
+	if len(b.servers) != 0 {
+		t.Fatalf("strict+nil source: got %d servers, want 0 (no server built)", len(b.servers))
+	}
+	if b.plain != nil || b.mtls != nil {
+		t.Fatalf("strict+nil source: no server should be built, got plain=%v mtls=%v",
+			b.plain != nil, b.mtls != nil)
+	}
+	if b.Server() != nil {
+		t.Fatal("strict+nil source: Server() must be nil on a poisoned builder")
+	}
+
+	// Serve on a real listener must refuse — return an error, serve no traffic.
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer lis.Close()
+
+	// Serve must refuse PROMPTLY: return an error before serving. A Serve that
+	// blocks (accepting/serving) or returns nil is itself the fail-open bug, so
+	// anything but a quick non-nil error is a failure.
+	done := make(chan error, 1)
+	go func() { done <- b.Serve(lis) }()
+
+	select {
+	case serveErr := <-done:
+		if serveErr == nil {
+			t.Fatal("strict+nil source: Serve returned nil (plaintext would be served); want a refuse-to-serve error")
+		}
+		// The error must name the service and mention strict/SVID so an operator
+		// can diagnose the misconfiguration.
+		msg := serveErr.Error()
+		for _, want := range []string{"identity", "strict", "SVID"} {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("Serve error %q must mention %q for operator diagnosis", msg, want)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("strict+nil source: Serve blocked instead of refusing; something is being served on a poisoned builder")
 	}
 }
 
