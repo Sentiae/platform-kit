@@ -257,12 +257,12 @@ func (r *HandedTokenEnvelopeResolver) Resolve(ctx context.Context, secretRef str
 		return SecretValue{}, err
 	}
 	if r.base == nil {
-		return SecretValue{}, fmt.Errorf("secret: resolve %s: vault client unavailable", secretRef)
+		return SecretValue{}, fmt.Errorf("%w: %s", ErrVaultUnavailable, secretRef)
 	}
 	if principal.Token == "" {
 		logger.FromContext(ctx).Warn("secret resolve denied: no handed token",
 			"secret_ref", secretRef, "principal", principal.String())
-		return SecretValue{}, fmt.Errorf("secret: resolve %s: no handed vault token", secretRef)
+		return SecretValue{}, fmt.Errorf("%w: %s", ErrNoHandedToken, secretRef)
 	}
 
 	client, err := r.base.Clone()

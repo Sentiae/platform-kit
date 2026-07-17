@@ -23,10 +23,20 @@ import (
 	"github.com/sentiae/platform-kit/logger"
 )
 
-// Errors (registered by callers via platformerrors at their boundary).
+// Errors. Every failure a Resolver returns is one of these sentinels (wrapped
+// with %w), so a caller can always tell a tenancy DENIAL from a missing secret
+// from a broken resolver with errors.Is — never by string-matching, and never
+// by collapsing them all into "internal error".
+//
+// Each consuming service MUST map these to codes at its own boundary via
+// platformerrors.Register (CLAUDE.md §16.3) — typically in internal/app/errors.go.
+// This package cannot do it for them: the registry is per-process and importing
+// it here would bind every consumer to one mapping. Registration is therefore a
+// caller obligation this package CANNOT enforce; a service that skips it
+// silently degrades every one of these to codes.Internal, which makes a
+// cross-tenant denial indistinguishable from a crash. See runtime-service's
+// internal/app/errors.go for the reference registration.
 var (
-	// ErrInvalidSecretRef is returned when the ref is not "<path>#<field>".
-	ErrInvalidSecretRef = errors.New("secret: invalid secret_ref (want \"<path>#<field>\")")
 	// ErrSecretNotFound is returned when Vault has no such path/field.
 	ErrSecretNotFound = errors.New("secret: not found")
 	// ErrUnscopedSecretRef is returned when the ref is not tenant-namespaced
@@ -36,6 +46,16 @@ var (
 	// own the ref (I28): resolution is refused without any Vault call, so the
 	// ref's existence cannot be probed across tenants.
 	ErrCrossTenantSecret = errors.New("secret: cross-tenant resolution denied")
+	// ErrVaultUnavailable is returned when a resolver holds no usable Vault
+	// client (e.g. HandedTokenEnvelopeResolver's base client failed to build from
+	// the VAULT_* env). It is a host/wiring fault, not a caller fault: the
+	// resolver fails closed rather than fall back to any standing capability.
+	ErrVaultUnavailable = errors.New("secret: vault client unavailable")
+	// ErrNoHandedToken is returned when a HandedTokenEnvelopeResolver (D-125) is
+	// asked to resolve without the per-deployment token the control plane must
+	// hand in on Principal.Token. The resolver never mints, so a missing handed
+	// token leaves it with no capability at all and it fails closed.
+	ErrNoHandedToken = errors.New("secret: no handed vault token")
 )
 
 // Principal identifies who is resolving a secret. It is never the secret's
