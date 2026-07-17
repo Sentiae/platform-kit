@@ -120,6 +120,8 @@ func (s SecretValue) MarshalJSON() ([]byte, error) { return []byte(`"[REDACTED]"
 // Refs are tenant-namespaced: "tenants/<org-uuid>/<subpath>#<field>". A secret
 // resolves only for a principal whose verified OrgID equals the ref's org
 // (I28); cross-tenant or unscoped resolution is refused at the seam.
+//
+//sentiae:port P14
 type Resolver interface {
 	Resolve(ctx context.Context, secretRef string, principal Principal) (SecretValue, error)
 }
