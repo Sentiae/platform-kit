@@ -14,6 +14,11 @@
 //	    EnvPrefix: "APP",
 //	    Defaults:  map[string]any{"port": "8080", "environment": "development"},
 //	})
+//
+// Load applies the `validate` tags after populating the target and returns a
+// *ValidationError naming each offending field, so a service with absent or
+// invalid config fails at boot rather than running degraded. A struct with no
+// `validate` tags is unaffected.
 package config
 
 import (
@@ -21,11 +26,66 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/spf13/viper"
 )
+
+// validate is the shared struct validator applied to every Load target.
+// WithRequiredStructEnabled matches platform-kit's own validation package and
+// makes `required` on a nested struct field meaningful rather than a silent
+// no-op.
+var validate = validator.New(validator.WithRequiredStructEnabled())
+
+// ValidationError reports config fields that failed their `validate` tag.
+// It is returned by Load when the populated target violates its own rules,
+// so a service fails fast at boot instead of running on absent config.
+type ValidationError struct {
+	// Fields names each offending field as "Struct.Field: reason".
+	Fields []string
+}
+
+func (e *ValidationError) Error() string {
+	return "config validation failed: " + strings.Join(e.Fields, "; ")
+}
+
+// validateTarget runs the struct validator against target. Targets that are not
+// structs (e.g. a map) cannot carry `validate` tags, so they are skipped.
+func validateTarget(target any) error {
+	rv := reflect.ValueOf(target)
+	for rv.Kind() == reflect.Ptr {
+		if rv.IsNil() {
+			return errors.New("config: target is nil")
+		}
+		rv = rv.Elem()
+	}
+	if rv.Kind() != reflect.Struct {
+		return nil
+	}
+
+	err := validate.Struct(rv.Interface())
+	if err == nil {
+		return nil
+	}
+
+	var verrs validator.ValidationErrors
+	if !errors.As(err, &verrs) {
+		return fmt.Errorf("validating config: %w", err)
+	}
+
+	fields := make([]string, 0, len(verrs))
+	for _, fe := range verrs {
+		if fe.Param() == "" {
+			fields = append(fields, fmt.Sprintf("%s: failed %q", fe.Namespace(), fe.Tag()))
+			continue
+		}
+		fields = append(fields, fmt.Sprintf("%s: failed %q (%s)", fe.Namespace(), fe.Tag(), fe.Param()))
+	}
+	return &ValidationError{Fields: fields}
+}
 
 // Options configures the config loader.
 type Options struct {
@@ -189,6 +249,13 @@ func Load(target any, opts Options) error {
 	// Unmarshal into the target struct.
 	if err := v.Unmarshal(target); err != nil {
 		return fmt.Errorf("unmarshaling config: %w", err)
+	}
+
+	// Validate the populated target against its `validate` tags (§17: validate
+	// on Load, fail fast). Runs before the hot-reloader starts so an invalid
+	// config never leaves a watcher goroutine behind.
+	if err := validateTarget(target); err != nil {
+		return err
 	}
 
 	if opts.OnReload != nil {

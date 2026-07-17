@@ -20,8 +20,21 @@ const (
 )
 
 // MTLSMode returns the parsed gRPC mesh mTLS mode from APP_GRPC_MTLS_MODE.
-// Unset or unrecognized values return MTLSModeOff, so the mesh stays in
-// today's insecure-by-default posture until explicitly switched on.
+//
+// Unset returns MTLSModeOff. That is deliberate: the mesh stays in today's
+// insecure-by-default posture until explicitly switched on, and flipping the
+// unset case here would change every service's transport at once.
+//
+// An unrecognized non-empty value also returns MTLSModeOff, and that is a
+// KNOWN GAP, not a design choice: a typo (APP_GRPC_MTLS_MODE=stric) silently
+// disables mesh mTLS fleet-wide — the operator asked for a mode and got none,
+// with no signal. This getter cannot close it. Rejecting a bad value belongs
+// at boot, once, not in a getter called from 66 sites across 20 services; the
+// closure is the boot-time posture assertion (D-162a L1/L3), which validates
+// the variable and refuses to start on an unrecognized value.
+//
+// Tracked as #mtls-mode-typo-disables-mesh. Until that lands, an unrecognized
+// value here means "off" and nothing says so at runtime.
 func MTLSMode() string {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_GRPC_MTLS_MODE"))) {
 	case MTLSModePermissive:

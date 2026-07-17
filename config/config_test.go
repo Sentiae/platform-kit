@@ -1,8 +1,10 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -301,4 +303,91 @@ func TestMustLoad_Panics(t *testing.T) {
 	MustLoad(&cfg, Options{
 		ConfigFile: "/nonexistent/config.yaml",
 	})
+}
+
+// --- validate-on-Load (§17: validate on Load, fail fast) ---
+
+type validatedConfig struct {
+	Port        string `mapstructure:"port" validate:"required,numeric"`
+	Environment string `mapstructure:"environment" validate:"required,oneof=development staging production"`
+	Optional    string `mapstructure:"optional"`
+}
+
+func TestLoad_Validation(t *testing.T) {
+	tests := []struct {
+		name       string
+		defaults   map[string]any
+		wantErr    bool
+		wantFields []string
+	}{
+		{
+			name:     "satisfied config passes",
+			defaults: map[string]any{"port": "8080", "environment": "development"},
+			wantErr:  false,
+		},
+		{
+			name:       "missing required field names it",
+			defaults:   map[string]any{"environment": "development"},
+			wantErr:    true,
+			wantFields: []string{"validatedConfig.Port"},
+		},
+		{
+			name:       "value outside oneof names it",
+			defaults:   map[string]any{"port": "8080", "environment": "bogus"},
+			wantErr:    true,
+			wantFields: []string{"validatedConfig.Environment"},
+		},
+		{
+			name:       "every offending field is reported",
+			defaults:   map[string]any{},
+			wantErr:    true,
+			wantFields: []string{"validatedConfig.Port", "validatedConfig.Environment"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg validatedConfig
+			err := Load(&cfg, Options{Defaults: tt.defaults})
+
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("Load() = %v, want nil", err)
+				}
+				return
+			}
+
+			if err == nil {
+				t.Fatal("Load() = nil, want validation error")
+			}
+			var ve *ValidationError
+			if !errors.As(err, &ve) {
+				t.Fatalf("Load() = %v (%T), want *ValidationError", err, err)
+			}
+			if len(ve.Fields) != len(tt.wantFields) {
+				t.Fatalf("Fields = %v, want %d entries", ve.Fields, len(tt.wantFields))
+			}
+			for _, want := range tt.wantFields {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not name field %q", err.Error(), want)
+				}
+			}
+		})
+	}
+}
+
+// An untagged struct must be unaffected by the validator.
+func TestLoad_UntaggedStructUnaffected(t *testing.T) {
+	var cfg testConfig
+	if err := Load(&cfg, Options{Defaults: map[string]any{}}); err != nil {
+		t.Fatalf("Load() on untagged struct = %v, want nil", err)
+	}
+}
+
+// A non-struct target cannot carry validate tags; Load must not reject it.
+func TestLoad_NonStructTargetSkipsValidation(t *testing.T) {
+	target := map[string]any{}
+	if err := Load(&target, Options{Defaults: map[string]any{"port": "8080"}}); err != nil {
+		t.Fatalf("Load() on map target = %v, want nil", err)
+	}
 }
