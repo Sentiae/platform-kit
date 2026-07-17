@@ -186,6 +186,10 @@ func profileOverrideFile(baseFile, profile string) string {
 
 // Load populates the target struct from environment variables, config files,
 // and defaults. The target must be a pointer to a struct with `mapstructure` tags.
+//
+// After populating and validating the target, Load also asserts the global mesh
+// mTLS mode is recognized (ValidateMTLSMode): a mistyped APP_GRPC_MTLS_MODE
+// fails boot here rather than silently degrading to "off" (D-162a).
 func Load(target any, opts Options) error {
 	v := viper.New()
 
@@ -256,6 +260,16 @@ func Load(target any, opts Options) error {
 	// config never leaves a watcher goroutine behind.
 	if err := validateTarget(target); err != nil {
 		return err
+	}
+
+	// Assert the global mesh mTLS mode is recognized (D-162a L1/L3): every
+	// service funnels through Load at boot, so validating APP_GRPC_MTLS_MODE
+	// here refuses to start on a typo (e.g. "stric") fleet-wide rather than
+	// letting config.MTLSMode() degrade it to "off" and silently serve
+	// plaintext. Independent of the target/prefix — one mesh variable,
+	// validated identically everywhere.
+	if err := ValidateMTLSMode(); err != nil {
+		return fmt.Errorf("config: %w", err)
 	}
 
 	if opts.OnReload != nil {

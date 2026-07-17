@@ -39,6 +39,42 @@ func TestNew_EmptyMode_DefaultsOff(t *testing.T) {
 	}
 }
 
+func TestNew_UnrecognizedMode_RefusesToServe(t *testing.T) {
+	// Fail-closed (D-162a): an unrecognized non-empty mode is a misconfiguration,
+	// not a request for plaintext. The builder must not silently pick "off".
+	b := New(Config{Mode: "stric", ServiceName: "identity"})
+	if len(b.servers) != 0 || b.plain != nil || b.mtls != nil {
+		t.Fatalf("unrecognized mode: no server should be built, got servers=%d plain=%v mtls=%v",
+			len(b.servers), b.plain != nil, b.mtls != nil)
+	}
+	if b.Server() != nil {
+		t.Fatal("unrecognized mode: Server() must be nil on a poisoned builder")
+	}
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer lis.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- b.Serve(lis) }()
+	select {
+	case serveErr := <-done:
+		if serveErr == nil {
+			t.Fatal("unrecognized mode: Serve returned nil (plaintext would be served); want a refuse-to-serve error")
+		}
+		msg := serveErr.Error()
+		for _, want := range []string{"identity", "stric"} {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("Serve error %q must mention %q for operator diagnosis", msg, want)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("unrecognized mode: Serve blocked instead of refusing")
+	}
+}
+
 func TestNew_PermissiveNilSource_DegradesToPlaintext(t *testing.T) {
 	// nil Source with a non-off mode must degrade to plaintext-only, never panic.
 	b := New(Config{Mode: config.MTLSModePermissive, Source: nil, ServiceName: "test"})

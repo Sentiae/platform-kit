@@ -391,3 +391,26 @@ func TestLoad_NonStructTargetSkipsValidation(t *testing.T) {
 		t.Fatalf("Load() on map target = %v, want nil", err)
 	}
 }
+
+// Load asserts the global mesh mTLS mode at boot (D-162a): a typo'd
+// APP_GRPC_MTLS_MODE fails boot rather than silently degrading to "off".
+func TestLoad_RejectsBadMTLSMode(t *testing.T) {
+	t.Setenv("APP_GRPC_MTLS_MODE", "stric")
+	var cfg testConfig
+	err := Load(&cfg, Options{Defaults: map[string]any{"port": "8080"}})
+	if err == nil {
+		t.Fatal("Load() = nil, want error for a mistyped APP_GRPC_MTLS_MODE")
+	}
+}
+
+func TestLoad_AcceptsValidMTLSMode(t *testing.T) {
+	for _, mode := range []string{"", "off", "permissive", "strict"} {
+		t.Run("mode="+mode, func(t *testing.T) {
+			t.Setenv("APP_GRPC_MTLS_MODE", mode)
+			var cfg testConfig
+			if err := Load(&cfg, Options{Defaults: map[string]any{"port": "8080"}}); err != nil {
+				t.Fatalf("Load() with APP_GRPC_MTLS_MODE=%q = %v, want nil", mode, err)
+			}
+		})
+	}
+}

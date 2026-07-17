@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"strings"
 )
@@ -25,16 +26,13 @@ const (
 // insecure-by-default posture until explicitly switched on, and flipping the
 // unset case here would change every service's transport at once.
 //
-// An unrecognized non-empty value also returns MTLSModeOff, and that is a
-// KNOWN GAP, not a design choice: a typo (APP_GRPC_MTLS_MODE=stric) silently
-// disables mesh mTLS fleet-wide — the operator asked for a mode and got none,
-// with no signal. This getter cannot close it. Rejecting a bad value belongs
-// at boot, once, not in a getter called from 66 sites across 20 services; the
-// closure is the boot-time posture assertion (D-162a L1/L3), which validates
-// the variable and refuses to start on an unrecognized value.
-//
-// Tracked as #mtls-mode-typo-disables-mesh. Until that lands, an unrecognized
-// value here means "off" and nothing says so at runtime.
+// An unrecognized non-empty value also returns MTLSModeOff, but that no longer
+// silently disables the mesh: this getter is a post-boot reader called from
+// ~66 sites across 20 services and cannot return an error, so the typo check
+// lives at boot in ValidateMTLSMode, which config.Load calls before any service
+// serves. A typo (APP_GRPC_MTLS_MODE=stric) now refuses boot rather than
+// degrading to "off" with no signal; by the time this getter runs, the value
+// has already been proven recognized. Closes #mtls-mode-typo-disables-mesh.
 func MTLSMode() string {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv("APP_GRPC_MTLS_MODE"))) {
 	case MTLSModePermissive:
@@ -43,6 +41,30 @@ func MTLSMode() string {
 		return MTLSModeStrict
 	default:
 		return MTLSModeOff
+	}
+}
+
+// ValidateMTLSMode is the boot-time closure for APP_GRPC_MTLS_MODE (D-162a
+// L1/L3: no security posture is selected by the ABSENCE — or misspelling — of a
+// value). config.Load calls it so every service fails fast on an unrecognized
+// mode instead of silently serving plaintext under a mistyped "strict".
+//
+//   - unset/empty → nil. "off" is the intended default; an operator who set
+//     nothing asked for nothing, which is a recognized, legal state.
+//   - off | permissive | strict (case-insensitive, trimmed) → nil.
+//   - anything else → an error naming the bad value and the valid set.
+//
+// It reads APP_GRPC_MTLS_MODE directly (as MTLSMode does), independent of any
+// service's config prefix, so the one mesh variable is validated identically
+// fleet-wide.
+func ValidateMTLSMode() error {
+	raw := os.Getenv("APP_GRPC_MTLS_MODE")
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", MTLSModeOff, MTLSModePermissive, MTLSModeStrict:
+		return nil
+	default:
+		return fmt.Errorf("invalid APP_GRPC_MTLS_MODE %q: must be one of %q, %q, %q (or unset for %q)",
+			raw, MTLSModeOff, MTLSModePermissive, MTLSModeStrict, MTLSModeOff)
 	}
 }
 

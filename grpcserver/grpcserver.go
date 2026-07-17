@@ -91,6 +91,18 @@ func New(cfg Config, opts ...grpc.ServerOption) *Builder {
 		mode = config.MTLSModeOff
 	}
 
+	// FAIL-CLOSED: an unrecognized non-empty mode is a misconfiguration, not a
+	// request for plaintext. config.Load already rejects a typo'd
+	// APP_GRPC_MTLS_MODE fleet-wide, but the builder must not silently pick
+	// "off" for a bad value that reaches it another way — that is exactly the
+	// posture-by-absence this package's doc forbids. Refuse to serve.
+	if mode != config.MTLSModeOff && mode != config.MTLSModePermissive && mode != config.MTLSModeStrict {
+		b.buildErr = fmt.Errorf("grpcserver: service %q configured with unrecognized mTLS mode %q; refusing to serve (want one of %q, %q, %q)", cfg.ServiceName, mode, config.MTLSModeOff, config.MTLSModePermissive, config.MTLSModeStrict)
+		slog.Default().Error("grpcserver: unrecognized mTLS mode; refusing to serve",
+			"service", cfg.ServiceName, "mode", mode)
+		return b
+	}
+
 	// FAIL-CLOSED: strict mTLS required but no SVID source. Refuse to serve
 	// rather than silently serving plaintext under a "strict" posture.
 	if mode == config.MTLSModeStrict && cfg.Source == nil {
@@ -129,7 +141,8 @@ func New(cfg Config, opts ...grpc.ServerOption) *Builder {
 		mtlsOpts = append(mtlsOpts, opts...)
 		b.mtls = grpc.NewServer(mtlsOpts...)
 		b.servers = []*grpc.Server{b.mtls}
-	default: // off
+	default: // off — the only value reaching here; unrecognized modes are
+		// rejected above, so default no longer swallows a typo into plaintext.
 		b.plain = grpc.NewServer(append(append([]grpc.ServerOption{}, svidOpts...), opts...)...)
 		b.servers = []*grpc.Server{b.plain}
 	}
