@@ -3,8 +3,10 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +17,13 @@ import (
 
 // Ensure KafkaConsumer implements Consumer.
 var _ Consumer = (*KafkaConsumer)(nil)
+
+// dlqSink is the write seam for the default dead-letter writer. Satisfied by
+// *kafka.Writer; tests inject a fake to assert dead-letter routing without a
+// live broker.
+type dlqSink interface {
+	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
+}
 
 // ConsumerConfig holds Kafka consumer settings.
 type ConsumerConfig struct {
@@ -122,6 +131,7 @@ type KafkaConsumer struct {
 	handlers  map[string]EventHandler
 	reader    *kafka.Reader
 	describer groupDescriber
+	dlqWriter dlqSink
 	mu        sync.Mutex
 
 	// assignErr holds the fatal "stable group with zero partitions" error
@@ -135,14 +145,15 @@ type KafkaConsumer struct {
 
 // topicHealth is updated on every processed message.
 type topicHealth struct {
-	Topic          string    `json:"topic"`
-	GroupID        string    `json:"group_id"`
-	LastOffset     int64     `json:"last_offset"`
-	LastEventType  string    `json:"last_event_type"`
-	LastProcessed  time.Time `json:"last_processed"`
-	MessagesOK     int64     `json:"messages_ok"`
-	MessagesFailed int64     `json:"messages_failed"`
-	Lag            int64     `json:"lag"`
+	Topic                string    `json:"topic"`
+	GroupID              string    `json:"group_id"`
+	LastOffset           int64     `json:"last_offset"`
+	LastEventType        string    `json:"last_event_type"`
+	LastProcessed        time.Time `json:"last_processed"`
+	MessagesOK           int64     `json:"messages_ok"`
+	MessagesFailed       int64     `json:"messages_failed"`
+	MessagesDeadLettered int64     `json:"messages_dead_lettered"`
+	Lag                  int64     `json:"lag"`
 }
 
 // NewConsumer creates a new Kafka consumer.
@@ -163,6 +174,16 @@ func NewConsumer(cfg ConsumerConfig) (*KafkaConsumer, error) {
 		handlers:  make(map[string]EventHandler),
 		health:    make(map[string]*topicHealth),
 		describer: &kafka.Client{Addr: kafka.TCP(cfg.Brokers...)},
+		// Default dead-letter sink: raw-bytes writer to <topic>.dlq. Ensures
+		// poison messages are durably parked by construction even when no
+		// cfg.DeadLetterFunc override is wired (the fleet default). Per-message
+		// Topic is set at write time, so the writer's own Topic stays empty.
+		dlqWriter: &kafka.Writer{
+			Addr:                   kafka.TCP(cfg.Brokers...),
+			Balancer:               &kafka.LeastBytes{},
+			RequiredAcks:           kafka.RequireAll,
+			AllowAutoTopicCreation: true,
+		},
 	}, nil
 }
 
@@ -382,10 +403,19 @@ func (c *KafkaConsumer) consumeLoop(ctx context.Context) {
 		consecutiveErrors = 0
 		backoff = c.cfg.ReconnectBaseBackoff
 
-		c.handleFetchedMessage(ctx, msg)
-
 		// Commit after success OR after dead-lettering to avoid infinite retry
-		// loops — every branch of handleFetchedMessage is terminal.
+		// loops — every terminal branch of handleFetchedMessage returns
+		// commit=true. The ONE exception is a failed DEFAULT dead-letter write
+		// (broker unreachable): commit=false leaves the offset uncommitted so
+		// the poison is redelivered and the DLQ write retried — no message loss.
+		if commit := c.handleFetchedMessage(ctx, msg); !commit {
+			c.cfg.Logger.Warn("not committing message: dead-letter write failed, will redeliver",
+				"topic", msg.Topic,
+				"offset", msg.Offset,
+			)
+			continue
+		}
+
 		if err := reader.CommitMessages(ctx, msg); err != nil {
 			c.cfg.Logger.Error("commit failed",
 				"topic", msg.Topic,
@@ -401,7 +431,11 @@ func (c *KafkaConsumer) consumeLoop(ctx context.Context) {
 // caller commits after this returns. The message's own Topic is used for
 // health, DLQ, and log fields (each message carries its real topic under a
 // GroupTopics reader). This is the unit-test seam: no reader required.
-func (c *KafkaConsumer) handleFetchedMessage(ctx context.Context, msg kafka.Message) {
+//
+// It returns commit=true for every terminal outcome (including a successful
+// dead-letter). It returns commit=false ONLY when the DEFAULT dead-letter
+// write fails, so the caller leaves the offset uncommitted for redelivery.
+func (c *KafkaConsumer) handleFetchedMessage(ctx context.Context, msg kafka.Message) (commit bool) {
 	lag := msg.HighWaterMark - msg.Offset - 1
 	if lag < 0 {
 		lag = 0
@@ -414,8 +448,7 @@ func (c *KafkaConsumer) handleFetchedMessage(ctx context.Context, msg kafka.Mess
 			"offset", msg.Offset,
 			"error", err,
 		)
-		c.sendToDeadLetter(ctx, msg, "", 0, fmt.Errorf("unmarshal: %w", err))
-		return
+		return c.sendToDeadLetter(ctx, msg, "", 0, fmt.Errorf("unmarshal: %w", err)) == nil
 	}
 
 	c.mu.Lock()
@@ -424,7 +457,7 @@ func (c *KafkaConsumer) handleFetchedMessage(ctx context.Context, msg kafka.Mess
 
 	if !ok {
 		c.cfg.Logger.Debug("no handler", "type", event.Type, "topic", msg.Topic)
-		return
+		return true
 	}
 
 	// Schema validation: reject payloads that don't match the taxonomy.
@@ -436,9 +469,9 @@ func (c *KafkaConsumer) handleFetchedMessage(ctx context.Context, msg kafka.Mess
 				"event_type", event.Type,
 				"error", err,
 			)
-			c.sendToDeadLetter(ctx, msg, event.Type, 0, fmt.Errorf("schema_validation_failed: %w", err))
+			dlErr := c.sendToDeadLetter(ctx, msg, event.Type, 0, fmt.Errorf("schema_validation_failed: %w", err))
 			c.recordFailure(msg.Topic, event.Type, msg.Offset, lag)
-			return
+			return dlErr == nil
 		}
 	}
 
@@ -462,11 +495,13 @@ func (c *KafkaConsumer) handleFetchedMessage(ctx context.Context, msg kafka.Mess
 	}
 
 	if !handled {
-		c.sendToDeadLetter(ctx, msg, event.Type, c.cfg.MaxRetries, lastErr)
+		dlErr := c.sendToDeadLetter(ctx, msg, event.Type, c.cfg.MaxRetries, lastErr)
 		c.recordFailure(msg.Topic, event.Type, msg.Offset, lag)
-	} else {
-		c.recordSuccess(msg.Topic, event.Type, msg.Offset, lag)
+		return dlErr == nil
 	}
+
+	c.recordSuccess(msg.Topic, event.Type, msg.Offset, lag)
+	return true
 }
 
 // assertAssignment polls the group coordinator until the consumer group has at
@@ -555,28 +590,90 @@ func (c *KafkaConsumer) assignedPartitionCount(ctx context.Context) (int, error)
 	return total, nil
 }
 
-func (c *KafkaConsumer) sendToDeadLetter(ctx context.Context, msg kafka.Message, eventType string, retryCount int, lastErr error) {
-	if c.cfg.DeadLetterFunc == nil {
-		c.cfg.Logger.Error("message dead-lettered (no handler configured)",
+// sendToDeadLetter routes a poison message to its dead-letter destination.
+//
+// When cfg.DeadLetterFunc is set it is invoked (the override seam) and the
+// message is considered dead-lettered (returns nil). Otherwise the DEFAULT
+// raw-bytes writer publishes the ORIGINAL key/value/headers to <topic>.dlq,
+// annotated with dlq-* provenance headers, and returns the write error. A
+// non-nil error means the message was NOT durably parked, so the caller must
+// not commit the offset (it will be redelivered and retried).
+func (c *KafkaConsumer) sendToDeadLetter(ctx context.Context, msg kafka.Message, eventType string, retryCount int, lastErr error) error {
+	if c.cfg.DeadLetterFunc != nil {
+		c.cfg.DeadLetterFunc(ctx, FailedMessage{
+			Topic:      msg.Topic,
+			Key:        msg.Key,
+			Value:      msg.Value,
+			Headers:    msg.Headers,
+			Offset:     msg.Offset,
+			Partition:  msg.Partition,
+			EventType:  eventType,
+			RetryCount: retryCount,
+			LastError:  lastErr,
+		})
+		c.cfg.Logger.Error("message dead-lettered via DeadLetterFunc override",
 			"topic", msg.Topic,
 			"offset", msg.Offset,
 			"event_type", eventType,
 			"error", lastErr,
 		)
-		return
+		c.recordDeadLetter(msg.Topic)
+		return nil
 	}
 
-	c.cfg.DeadLetterFunc(ctx, FailedMessage{
-		Topic:      msg.Topic,
-		Key:        msg.Key,
-		Value:      msg.Value,
-		Headers:    msg.Headers,
-		Offset:     msg.Offset,
-		Partition:  msg.Partition,
-		EventType:  eventType,
-		RetryCount: retryCount,
-		LastError:  lastErr,
-	})
+	if c.dlqWriter == nil {
+		err := fmt.Errorf("kafka: no dead-letter sink configured")
+		c.cfg.Logger.Error("cannot dead-letter message: no sink configured",
+			"topic", msg.Topic,
+			"offset", msg.Offset,
+			"event_type", eventType,
+			"error", lastErr,
+		)
+		return err
+	}
+
+	dlqTopic := msg.Topic + ".dlq"
+	errStr := ""
+	if lastErr != nil {
+		errStr = lastErr.Error()
+	}
+
+	// Preserve original headers, then append dlq-* provenance headers.
+	headers := make([]kafka.Header, 0, len(msg.Headers)+7)
+	headers = append(headers, msg.Headers...)
+	headers = append(headers,
+		kafka.Header{Key: "dlq-source-topic", Value: []byte(msg.Topic)},
+		kafka.Header{Key: "dlq-partition", Value: []byte(strconv.Itoa(msg.Partition))},
+		kafka.Header{Key: "dlq-offset", Value: []byte(strconv.FormatInt(msg.Offset, 10))},
+		kafka.Header{Key: "dlq-event-type", Value: []byte(eventType)},
+		kafka.Header{Key: "dlq-attempts", Value: []byte(strconv.Itoa(retryCount))},
+		kafka.Header{Key: "dlq-error", Value: []byte(errStr)},
+		kafka.Header{Key: "dlq-time", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
+	)
+
+	if err := c.dlqWriter.WriteMessages(ctx, kafka.Message{
+		Topic:   dlqTopic,
+		Key:     msg.Key,
+		Value:   msg.Value,
+		Headers: headers,
+	}); err != nil {
+		c.cfg.Logger.Error("dead-letter write failed",
+			"topic", dlqTopic,
+			"source_offset", msg.Offset,
+			"event_type", eventType,
+			"error", err,
+		)
+		return fmt.Errorf("write dead-letter to %s: %w", dlqTopic, err)
+	}
+
+	c.cfg.Logger.Error("message dead-lettered",
+		"topic", dlqTopic,
+		"source_offset", msg.Offset,
+		"event_type", eventType,
+		"error", lastErr,
+	)
+	c.recordDeadLetter(msg.Topic)
+	return nil
 }
 
 // validateMessagePayload decodes the CloudEvent data and validates it
@@ -619,18 +716,41 @@ func (c *KafkaConsumer) recordFailure(topic, eventType string, offset, lag int64
 	c.healthMu.Unlock()
 }
 
-// Close closes the reader.
+// recordDeadLetter increments the per-topic dead-letter counter, keyed on the
+// SOURCE topic (matching recordFailure). Called only after a message is durably
+// routed to its dead-letter destination.
+func (c *KafkaConsumer) recordDeadLetter(topic string) {
+	c.healthMu.Lock()
+	h, ok := c.health[topic]
+	if !ok {
+		h = &topicHealth{Topic: topic, GroupID: c.cfg.GroupID}
+		c.health[topic] = h
+	}
+	h.MessagesDeadLettered++
+	c.healthMu.Unlock()
+}
+
+// Close closes the reader and the default dead-letter writer.
 func (c *KafkaConsumer) Close() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if c.reader == nil {
-		return nil
+	var errs []error
+	if w, ok := c.dlqWriter.(*kafka.Writer); ok && w != nil {
+		if err := w.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("kafka dlq writer close error: %w", err))
+		}
 	}
-	err := c.reader.Close()
-	c.reader = nil
-	if err != nil {
-		return fmt.Errorf("kafka close error: %w", err)
+
+	if c.reader != nil {
+		if err := c.reader.Close(); err != nil {
+			errs = append(errs, fmt.Errorf("kafka close error: %w", err))
+		}
+		c.reader = nil
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
 	}
 	return nil
 }

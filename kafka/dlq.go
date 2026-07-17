@@ -1,10 +1,23 @@
+// Package-level dead-letter model (as of T-HARDEN Wave 3):
+//
+// Poison messages are dead-lettered by the CONSUMER itself. KafkaConsumer owns
+// a default raw-bytes writer (see consumer.go) that publishes the ORIGINAL
+// message bytes to <source-topic>.dlq, annotated with dlq-* provenance headers,
+// whenever a message fails to unmarshal, fails schema validation, or exhausts
+// handler retries. A cfg.DeadLetterFunc override may replace that default sink.
+//
+// This file provides the ADMIN READ tooling over those .dlq topics — ListDLQ /
+// DLQEntry / IsDLQTopic — plus the (legacy, unused) DLQConfig knobs. The old
+// Publisher-based DLQ *producer* was removed: it published event type
+// "<type>.dlq" through the validating Publisher, which derived the topic from
+// the first two segments (the SOURCE topic, not .dlq) and rejected the type as
+// unregistered — it could never write a dead-letter and had zero callers.
 package kafka
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -34,91 +47,21 @@ func DefaultDLQConfig() DLQConfig {
 	}
 }
 
-// DLQProducer writes failed messages to their dead-letter topic.
-// It wraps any Publisher interface so the message format is
-// CloudEvents-compatible (same as the original event). The DLQ
-// topic is formed by appending the suffix to the event type's
-// derived topic name.
-type DLQProducer struct {
-	publisher Publisher
-	suffix    string
-}
-
-// NewDLQProducer wraps a publisher for DLQ writes.
-func NewDLQProducer(publisher Publisher, suffix string) *DLQProducer {
-	if suffix == "" {
-		suffix = ".dlq"
-	}
-	return &DLQProducer{publisher: publisher, suffix: suffix}
-}
-
-// Send routes a failed event to the DLQ topic. Error metadata
-// (attempt count, last error) is embedded in the Metadata map.
-func (d *DLQProducer) Send(ctx context.Context, sourceTopic string, eventType string, data EventData, attempt int, lastErr error) error {
-	if d.publisher == nil {
-		log.Printf("DLQ: no publisher configured, dropping event %s from %s", eventType, sourceTopic)
-		return nil
-	}
-	if data.Metadata == nil {
-		data.Metadata = make(map[string]any)
-	}
-	data.Metadata["dlq_source_topic"] = sourceTopic
-	data.Metadata["dlq_attempt"] = fmt.Sprintf("%d", attempt)
-	if lastErr != nil {
-		data.Metadata["dlq_error"] = lastErr.Error()
-	}
-	dlqEventType := eventType + d.suffix
-	return d.publisher.Publish(ctx, dlqEventType, data)
-}
-
-// AsHandler returns a DeadLetterFunc suitable for wiring into ConsumerConfig.
-// When a message permanently fails, the handler decodes the CloudEvent, fans
-// out the retry metadata into EventData.Metadata, and re-publishes it under
-// the <eventType><suffix> topic via d.publisher.
-func (d *DLQProducer) AsHandler(defaultSource string) DeadLetterFunc {
-	if defaultSource == "" {
-		defaultSource = "platform-kit/dlq"
-	}
-	return func(ctx context.Context, msg FailedMessage) {
-		// Decode the CloudEvent to recover its EventData and preserve
-		// upstream attribution fields (resource type, tenant, etc.).
-		var event CloudEvent
-		var data EventData
-		if err := json.Unmarshal(msg.Value, &event); err == nil {
-			_ = json.Unmarshal(event.Data, &data)
-		}
-
-		eventType := msg.EventType
-		if eventType == "" {
-			eventType = event.Type
-		}
-		if eventType == "" {
-			// Fall back so we still produce a traceable DLQ topic.
-			eventType = "unknown"
-		}
-
-		if err := d.Send(ctx, msg.Topic, eventType, data, msg.RetryCount, msg.LastError); err != nil {
-			log.Printf("DLQ: failed to publish %s from %s (offset=%d): %v",
-				eventType, msg.Topic, msg.Offset, err)
-		}
-	}
-}
-
 // DLQEntry is a single message read back from a DLQ topic for admin tooling.
 type DLQEntry struct {
-	Topic         string         `json:"topic"`
-	Partition     int            `json:"partition"`
-	Offset        int64          `json:"offset"`
-	Time          time.Time      `json:"time"`
-	EventType     string         `json:"event_type"`
-	EventID       string         `json:"event_id,omitempty"`
-	SourceTopic   string         `json:"source_topic,omitempty"`
-	Attempts      string         `json:"attempts,omitempty"`
-	LastError     string         `json:"last_error,omitempty"`
-	ResourceType  string         `json:"resource_type,omitempty"`
-	ResourceID    string         `json:"resource_id,omitempty"`
-	Payload       any            `json:"payload,omitempty"`
-	RawMetadata   map[string]any `json:"raw_metadata,omitempty"`
+	Topic        string         `json:"topic"`
+	Partition    int            `json:"partition"`
+	Offset       int64          `json:"offset"`
+	Time         time.Time      `json:"time"`
+	EventType    string         `json:"event_type"`
+	EventID      string         `json:"event_id,omitempty"`
+	SourceTopic  string         `json:"source_topic,omitempty"`
+	Attempts     string         `json:"attempts,omitempty"`
+	LastError    string         `json:"last_error,omitempty"`
+	ResourceType string         `json:"resource_type,omitempty"`
+	ResourceID   string         `json:"resource_id,omitempty"`
+	Payload      any            `json:"payload,omitempty"`
+	RawMetadata  map[string]any `json:"raw_metadata,omitempty"`
 }
 
 // ListDLQConfig parameterises ListDLQ.

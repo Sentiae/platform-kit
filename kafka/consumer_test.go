@@ -3,10 +3,224 @@ package kafka
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	kafkago "github.com/segmentio/kafka-go"
 )
+
+// fakeDLQSink is a dlqSink test double: it records every written message and
+// can be primed to return an error to exercise the not-committed path.
+type fakeDLQSink struct {
+	mu       sync.Mutex
+	messages []kafkago.Message
+	err      error
+}
+
+func (f *fakeDLQSink) WriteMessages(_ context.Context, msgs ...kafkago.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	f.messages = append(f.messages, msgs...)
+	return nil
+}
+
+func (f *fakeDLQSink) written() []kafkago.Message {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]kafkago.Message, len(f.messages))
+	copy(out, f.messages)
+	return out
+}
+
+func headerValue(msg kafkago.Message, key string) (string, bool) {
+	for _, h := range msg.Headers {
+		if h.Key == key {
+			return string(h.Value), true
+		}
+	}
+	return "", false
+}
+
+// TestHandleFetchedMessage_DefaultDLQ exercises the default (no DeadLetterFunc)
+// dead-letter writer: poison classes are routed to <topic>.dlq via the sink,
+// commit is gated on the write result, and the override seam still wins.
+func TestHandleFetchedMessage_DefaultDLQ(t *testing.T) {
+	if err := RegisterExtensionEvent(RegisteredEvent{
+		Type:        "test.defaultdlq.schema",
+		Domain:      "test",
+		Description: "default dlq schema test",
+		Owner:       "platform-kit",
+		Schema: `{
+			"type": "object",
+			"required": ["user_id"],
+			"properties": {"user_id": {"type": "string"}}
+		}`,
+	}); err != nil {
+		t.Fatalf("register schema: %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		rawGarbage    bool   // send non-JSON bytes → unmarshal failure
+		eventType     string // handler registration key + CloudEvent type
+		data          string // CloudEvent data payload
+		handlerErr    error  // handler return (nil = success)
+		disableSchema bool
+		useOverride   bool // wire cfg.DeadLetterFunc (override seam)
+		sinkErr       error
+
+		wantCommit       bool
+		wantSinkWrites   int
+		wantOverride     bool
+		wantHandlerCalls int32
+	}{
+		{
+			name:             "handler exhausts retries → default DLQ, committed",
+			eventType:        "type.fail",
+			data:             `{}`,
+			handlerErr:       errTest,
+			disableSchema:    true,
+			wantCommit:       true,
+			wantSinkWrites:   1,
+			wantHandlerCalls: 3, // MaxRetries
+		},
+		{
+			name:             "schema-invalid payload → default DLQ, handler never called",
+			eventType:        "test.defaultdlq.schema",
+			data:             `{"not_user_id":"oops"}`,
+			disableSchema:    false,
+			wantCommit:       true,
+			wantSinkWrites:   1,
+			wantHandlerCalls: 0,
+		},
+		{
+			name:           "unmarshal garbage → default DLQ, committed",
+			rawGarbage:     true,
+			disableSchema:  true,
+			wantCommit:     true,
+			wantSinkWrites: 1,
+		},
+		{
+			name:             "sink write error → not committed",
+			eventType:        "type.fail",
+			data:             `{}`,
+			handlerErr:       errTest,
+			disableSchema:    true,
+			sinkErr:          errors.New("broker down"),
+			wantCommit:       false,
+			wantSinkWrites:   0, // fake records nothing when erroring
+			wantHandlerCalls: 3,
+		},
+		{
+			name:             "DeadLetterFunc override wins → default sink unused",
+			eventType:        "type.fail",
+			data:             `{}`,
+			handlerErr:       errTest,
+			disableSchema:    true,
+			useOverride:      true,
+			wantCommit:       true,
+			wantSinkWrites:   0,
+			wantOverride:     true,
+			wantHandlerCalls: 3,
+		},
+		{
+			name:             "success path → no dead-letter, committed",
+			eventType:        "type.ok",
+			data:             `{}`,
+			handlerErr:       nil,
+			disableSchema:    true,
+			wantCommit:       true,
+			wantSinkWrites:   0,
+			wantHandlerCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &fakeDLQSink{err: tt.sinkErr}
+
+			var handlerCalls int32
+			var overrideCalls int32
+
+			c := &KafkaConsumer{
+				cfg: ConsumerConfig{
+					Logger:                  noopLogger(),
+					GroupID:                 "test-group",
+					MaxRetries:              3,
+					DisableSchemaValidation: tt.disableSchema,
+				},
+				handlers:  make(map[string]EventHandler),
+				health:    make(map[string]*topicHealth),
+				dlqWriter: sink,
+			}
+			if tt.useOverride {
+				c.cfg.DeadLetterFunc = func(_ context.Context, _ FailedMessage) {
+					atomic.AddInt32(&overrideCalls, 1)
+				}
+			}
+			if tt.eventType != "" {
+				c.handlers[tt.eventType] = func(_ context.Context, _ CloudEvent) error {
+					atomic.AddInt32(&handlerCalls, 1)
+					return tt.handlerErr
+				}
+			}
+
+			var msg kafkago.Message
+			if tt.rawGarbage {
+				msg = kafkago.Message{
+					Topic:         "topic1",
+					Offset:        7,
+					HighWaterMark: 8,
+					Key:           []byte("k"),
+					Value:         []byte("}{not json"),
+				}
+			} else {
+				msg = ceMsg(t, "topic1", tt.eventType, 2, 5, tt.data)
+			}
+
+			commit := c.handleFetchedMessage(context.Background(), msg)
+
+			if commit != tt.wantCommit {
+				t.Errorf("commit = %v, want %v", commit, tt.wantCommit)
+			}
+			if got := atomic.LoadInt32(&handlerCalls); got != tt.wantHandlerCalls {
+				t.Errorf("handler calls = %d, want %d", got, tt.wantHandlerCalls)
+			}
+			if got := atomic.LoadInt32(&overrideCalls); tt.wantOverride && got != 1 {
+				t.Errorf("override calls = %d, want 1", got)
+			} else if !tt.wantOverride && got != 0 {
+				t.Errorf("override calls = %d, want 0", got)
+			}
+
+			written := sink.written()
+			if len(written) != tt.wantSinkWrites {
+				t.Fatalf("sink writes = %d, want %d", len(written), tt.wantSinkWrites)
+			}
+
+			if tt.wantSinkWrites == 1 {
+				dl := written[0]
+				if dl.Topic != "topic1.dlq" {
+					t.Errorf("dlq topic = %q, want topic1.dlq", dl.Topic)
+				}
+				if string(dl.Value) != string(msg.Value) {
+					t.Errorf("dlq value = %q, want original %q", dl.Value, msg.Value)
+				}
+				if _, ok := headerValue(dl, "dlq-error"); !ok {
+					t.Errorf("dlq-error header missing: %+v", dl.Headers)
+				}
+				if src, _ := headerValue(dl, "dlq-source-topic"); src != "topic1" {
+					t.Errorf("dlq-source-topic = %q, want topic1", src)
+				}
+			}
+		})
+	}
+}
 
 func TestNewConsumer_Validation(t *testing.T) {
 	tests := []struct {
@@ -204,6 +418,7 @@ func TestDeadLetterFunc(t *testing.T) {
 			Logger:         noopLogger(),
 		},
 		handlers: make(map[string]EventHandler),
+		health:   make(map[string]*topicHealth),
 	}
 
 	testData := EventData{
