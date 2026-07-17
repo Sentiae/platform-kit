@@ -902,6 +902,28 @@ const (
 	EventPlatformStorageMetered = "platform.storage.metered"
 )
 
+// ---------- Permission domain -------------------------------------------
+//
+// permission-service's SpiceDB relationship graph is the authorization
+// source of truth. Its writers are fire-and-forget synchronous gRPC with no
+// outbox (#spicedb-writers-no-outbox), so a transient SpiceDB/permission
+// outage silently drops tuples. permission.tuple.changed (D-162b) is the
+// durable channel: a writer stages this event on its outbox in the same
+// transaction as the domain write, and permission-service's tuple projector
+// consumer applies it to SpiceDB idempotently (TOUCH=upsert, DELETE=no-op on
+// absent). Wire topic: sentiae.permission.tuple, keyed by the SpiceDB object.
+
+const (
+	// EventPermissionTupleChanged carries a single idempotent SpiceDB
+	// relationship change to be projected onto SpiceDB. Root resource_type/
+	// resource_id identify the SpiceDB object; metadata.op selects the
+	// operation (grant|revoke|set_exclusive) over the relation between that
+	// object and metadata.subject_type:subject_id. set_exclusive additionally
+	// clears metadata.clear_relations on the same {object,subject} pair before
+	// applying the new relation (an atomic role change).
+	EventPermissionTupleChanged = "permission.tuple.changed"
+)
+
 // RegisteredEvent describes a platform event's shape and ownership.
 type RegisteredEvent struct {
 	Type        string // bare event type (e.g., "work.spec.created")
@@ -2035,6 +2057,10 @@ var registeredEvents = []RegisteredEvent{
 	// ---- Platform ----------------------------------------------------
 	{EventPlatformStorageMetered, "platform", "D-109 per-org OCI storage consumption meter (logical bytes reachable under the acting org)", "registry-service",
 		dataSchema("platform.storage.metered", []string{"org_id", "bytes"}, `"org_id":{"type":"string"},"bytes":{"type":"integer"}`)},
+
+	// ---- Permission --------------------------------------------------
+	{EventPermissionTupleChanged, "permission", "D-162b idempotent SpiceDB relationship change projected by permission-service's tuple projector (grant|revoke|set_exclusive)", "permission-service",
+		dataSchema("permission.tuple.changed", []string{"op", "relation", "subject_type", "subject_id"}, `"op":{"type":"string","enum":["grant","revoke","set_exclusive"]},"relation":{"type":"string"},"subject_type":{"type":"string"},"subject_id":{"type":"string"},"clear_relations":{"type":"array","items":{"type":"string"}},"source_service":{"type":"string"}`)},
 }
 
 // registry is the package-level lookup table. It is built once at init.
