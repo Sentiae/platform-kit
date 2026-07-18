@@ -889,6 +889,7 @@ const (
 	EventIdentityMemberRoleChanged = "identity.member.role_changed"
 
 	EventIdentityInvitationCreated  = "identity.invitation.created"
+	EventIdentityInvitationSent     = "identity.invitation.sent"
 	EventIdentityInvitationAccepted = "identity.invitation.accepted"
 	EventIdentityInvitationRevoked  = "identity.invitation.revoked"
 )
@@ -1750,6 +1751,8 @@ var registeredEvents = []RegisteredEvent{
 
 	{EventIdentityInvitationCreated, "identity", "An invitation was created", "identity-service",
 		dataSchema("identity.invitation.created", []string{"email"}, `"email":{"type":"string"},"role":{"type":"string"}`)},
+	{EventIdentityInvitationSent, "identity", "An invitation email was requested", "identity-service",
+		dataSchema("identity.invitation.sent", []string{"email"}, `"email":{"type":"string"},"recipient_email":{"type":"string"},"inviter_name":{"type":"string"},"organization_name":{"type":"string"},"invitation_token":{"type":"string"},"context_type":{"type":"string"},"context_name":{"type":"string"}`)},
 	{EventIdentityInvitationAccepted, "identity", "An invitation was accepted", "identity-service",
 		dataSchema("identity.invitation.accepted", []string{"email"}, `"email":{"type":"string"}`)},
 	{EventIdentityInvitationRevoked, "identity", "An invitation was revoked", "identity-service",
