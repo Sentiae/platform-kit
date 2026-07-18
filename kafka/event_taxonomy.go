@@ -1751,8 +1751,8 @@ var registeredEvents = []RegisteredEvent{
 
 	{EventIdentityInvitationCreated, "identity", "An invitation was created", "identity-service",
 		dataSchema("identity.invitation.created", []string{"email"}, `"email":{"type":"string"},"role":{"type":"string"}`)},
-	{EventIdentityInvitationSent, "identity", "An invitation email was requested", "identity-service",
-		dataSchema("identity.invitation.sent", []string{"email"}, `"email":{"type":"string"},"recipient_email":{"type":"string"},"inviter_name":{"type":"string"},"organization_name":{"type":"string"},"invitation_token":{"type":"string"},"context_type":{"type":"string"},"context_name":{"type":"string"}`)},
+	{EventIdentityInvitationSent, "identity", "An invitation email was requested (id-only; notification fetches display fields via GetInvitationForDelivery)", "identity-service",
+		dataSchema("identity.invitation.sent", []string{"invitation_id", "organization_id"}, `"invitation_id":{"type":"string"},"organization_id":{"type":"string"}`)},
 	{EventIdentityInvitationAccepted, "identity", "An invitation was accepted", "identity-service",
 		dataSchema("identity.invitation.accepted", []string{"email"}, `"email":{"type":"string"}`)},
 	{EventIdentityInvitationRevoked, "identity", "An invitation was revoked", "identity-service",
