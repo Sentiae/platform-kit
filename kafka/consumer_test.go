@@ -222,6 +222,183 @@ func TestHandleFetchedMessage_DefaultDLQ(t *testing.T) {
 	}
 }
 
+// flakyDLQSink is a dlqSink test double that fails its first failFirst writes
+// with failErr, then records every subsequent write. It models the FIRST-poison
+// topic-creation race: the initial write to a fresh <topic>.dlq returns
+// UnknownTopicOrPartition until broker-side auto-creation completes.
+type flakyDLQSink struct {
+	mu        sync.Mutex
+	failFirst int
+	failErr   error
+	attempts  int
+	messages  []kafkago.Message
+}
+
+func (f *flakyDLQSink) WriteMessages(_ context.Context, msgs ...kafkago.Message) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.attempts++
+	if f.attempts <= f.failFirst {
+		return f.failErr
+	}
+	f.messages = append(f.messages, msgs...)
+	return nil
+}
+
+func (f *flakyDLQSink) stats() (attempts int, written []kafkago.Message) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]kafkago.Message, len(f.messages))
+	copy(out, f.messages)
+	return f.attempts, out
+}
+
+// TestSendToDeadLetter_TopicCreateRace proves #dlq-first-poison-topic-race:
+// when the first write to a not-yet-created <topic>.dlq fails with
+// UnknownTopicOrPartition (broker auto-creation racing the write), the default
+// writer retries in-session so the poison parks immediately and the offset
+// commits — instead of sitting unparked until the next rebalance/restart. It
+// also proves the fail-closed property is preserved: a genuinely different
+// produce error is NOT retried and still withholds the commit, and exhausting
+// the retry budget still withholds the commit rather than dropping the poison.
+func TestSendToDeadLetter_TopicCreateRace(t *testing.T) {
+	tests := []struct {
+		name         string
+		failFirst    int
+		failErr      error
+		retries      int // DeadLetterCreateRetries
+		wantCommit   bool
+		wantAttempts int
+		wantParked   bool
+	}{
+		{
+			name:         "first write races topic-create, retry parks in-session",
+			failFirst:    1,
+			failErr:      kafkago.UnknownTopicOrPartition,
+			retries:      5,
+			wantCommit:   true,
+			wantAttempts: 2, // 1 race + 1 success
+			wantParked:   true,
+		},
+		{
+			name:         "several create-races then success, still parks in-session",
+			failFirst:    3,
+			failErr:      kafkago.UnknownTopicOrPartition,
+			retries:      5,
+			wantCommit:   true,
+			wantAttempts: 4, // 3 races + 1 success
+			wantParked:   true,
+		},
+		{
+			name:         "topic-create race via wrapped error string is retried",
+			failFirst:    1,
+			failErr:      errors.New("kafka.(*Writer).WriteMessages: Unknown Topic Or Partition"),
+			retries:      5,
+			wantCommit:   true,
+			wantAttempts: 2,
+			wantParked:   true,
+		},
+		{
+			name:         "genuine broker error is NOT retried and withholds commit (fail-closed)",
+			failFirst:    99,
+			failErr:      errors.New("broker down"),
+			retries:      5,
+			wantCommit:   false,
+			wantAttempts: 1, // no retry on a non-topic error
+			wantParked:   false,
+		},
+		{
+			name:         "create race never clears within budget → withholds commit (no drop)",
+			failFirst:    99,
+			failErr:      kafkago.UnknownTopicOrPartition,
+			retries:      2,
+			wantCommit:   false,
+			wantAttempts: 3, // retries + 1, all failed
+			wantParked:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &flakyDLQSink{failFirst: tt.failFirst, failErr: tt.failErr}
+
+			c := &KafkaConsumer{
+				cfg: ConsumerConfig{
+					Logger:                     noopLogger(),
+					GroupID:                    "test-group",
+					MaxRetries:                 3,
+					DisableSchemaValidation:    true,
+					DeadLetterCreateRetries:    tt.retries,
+					DeadLetterCreateBackoff:    time.Millisecond, // keep the test fast
+					DeadLetterCreateMaxBackoff: time.Millisecond,
+				},
+				handlers:  make(map[string]EventHandler),
+				health:    make(map[string]*topicHealth),
+				dlqWriter: sink,
+			}
+			// Handler always fails so the message exhausts retries and is
+			// dead-lettered through the default writer path under test.
+			c.handlers["type.fail"] = func(_ context.Context, _ CloudEvent) error {
+				return errTest
+			}
+
+			msg := ceMsg(t, "topic1", "type.fail", 2, 5, `{}`)
+			commit := c.handleFetchedMessage(context.Background(), msg)
+
+			if commit != tt.wantCommit {
+				t.Errorf("commit = %v, want %v", commit, tt.wantCommit)
+			}
+
+			attempts, written := sink.stats()
+			if attempts != tt.wantAttempts {
+				t.Errorf("sink write attempts = %d, want %d", attempts, tt.wantAttempts)
+			}
+
+			if tt.wantParked {
+				if len(written) != 1 {
+					t.Fatalf("parked messages = %d, want 1 (poison must park in-session)", len(written))
+				}
+				dl := written[0]
+				if dl.Topic != "topic1.dlq" {
+					t.Errorf("dlq topic = %q, want topic1.dlq", dl.Topic)
+				}
+				if string(dl.Value) != string(msg.Value) {
+					t.Errorf("dlq value = %q, want original %q", dl.Value, msg.Value)
+				}
+				if src, _ := headerValue(dl, "dlq-source-topic"); src != "topic1" {
+					t.Errorf("dlq-source-topic = %q, want topic1", src)
+				}
+			} else if len(written) != 0 {
+				t.Errorf("parked messages = %d, want 0 (nothing must be recorded on a withheld commit)", len(written))
+			}
+		})
+	}
+}
+
+// TestDeadLetterWriteWithRetry_ContextCancel proves the retry loop honors ctx
+// cancellation during its backoff wait instead of spinning — it returns the
+// context error, which withholds the commit (fail-closed) rather than dropping.
+func TestDeadLetterWriteWithRetry_ContextCancel(t *testing.T) {
+	sink := &flakyDLQSink{failFirst: 99, failErr: kafkago.UnknownTopicOrPartition}
+	c := &KafkaConsumer{
+		cfg: ConsumerConfig{
+			Logger:                     noopLogger(),
+			DeadLetterCreateRetries:    5,
+			DeadLetterCreateBackoff:    time.Hour, // force the wait so cancel wins
+			DeadLetterCreateMaxBackoff: time.Hour,
+		},
+		dlqWriter: sink,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := c.deadLetterWriteWithRetry(ctx, kafkago.Message{Topic: "topic1.dlq"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want context.Canceled", err)
+	}
+}
+
 func TestNewConsumer_Validation(t *testing.T) {
 	tests := []struct {
 		name    string

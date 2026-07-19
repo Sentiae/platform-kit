@@ -67,6 +67,26 @@ type ConsumerConfig struct {
 	// registered schema before the handler is invoked; on failure the
 	// message is routed to DLQ with reason="schema_validation_failed".
 	DisableSchemaValidation bool
+
+	// DeadLetterCreateRetries is how many extra times the default dead-letter
+	// writer retries a write that fails with UnknownTopicOrPartition — i.e.
+	// the FIRST poison on a not-yet-created <topic>.dlq, where the writer's
+	// AllowAutoTopicCreation triggers async broker-side creation that the
+	// write itself races. Retrying after a short backoff lets creation finish
+	// so the poison parks in-session instead of at the next rebalance/restart
+	// (kafka-go does not re-fetch an uncommitted offset in-session). Only the
+	// topic-creation race is retried; any other write error returns at once so
+	// the commit is still withheld (fail-closed, no loss). Default: 5.
+	DeadLetterCreateRetries int
+
+	// DeadLetterCreateBackoff is the initial wait between dead-letter write
+	// retries during the topic-creation race. Doubles each retry up to
+	// DeadLetterCreateMaxBackoff. Default: 250ms.
+	DeadLetterCreateBackoff time.Duration
+
+	// DeadLetterCreateMaxBackoff caps the dead-letter write retry backoff.
+	// Default: 2s.
+	DeadLetterCreateMaxBackoff time.Duration
 }
 
 // DeadLetterFunc is called when a message fails after all retries.
@@ -116,6 +136,15 @@ func (c *ConsumerConfig) defaults() {
 	}
 	if c.AssignmentPollInterval == 0 {
 		c.AssignmentPollInterval = 5 * time.Second
+	}
+	if c.DeadLetterCreateRetries == 0 {
+		c.DeadLetterCreateRetries = 5
+	}
+	if c.DeadLetterCreateBackoff == 0 {
+		c.DeadLetterCreateBackoff = 250 * time.Millisecond
+	}
+	if c.DeadLetterCreateMaxBackoff == 0 {
+		c.DeadLetterCreateMaxBackoff = 2 * time.Second
 	}
 }
 
@@ -651,7 +680,7 @@ func (c *KafkaConsumer) sendToDeadLetter(ctx context.Context, msg kafka.Message,
 		kafka.Header{Key: "dlq-time", Value: []byte(time.Now().UTC().Format(time.RFC3339))},
 	)
 
-	if err := c.dlqWriter.WriteMessages(ctx, kafka.Message{
+	if err := c.deadLetterWriteWithRetry(ctx, kafka.Message{
 		Topic:   dlqTopic,
 		Key:     msg.Key,
 		Value:   msg.Value,
@@ -674,6 +703,74 @@ func (c *KafkaConsumer) sendToDeadLetter(ctx context.Context, msg kafka.Message,
 	)
 	c.recordDeadLetter(msg.Topic)
 	return nil
+}
+
+// deadLetterWriteWithRetry writes a poison message to its <topic>.dlq via the
+// default writer, retrying a bounded number of times when the broker reports
+// the topic does not yet exist.
+//
+// The default DLQ writer sets AllowAutoTopicCreation, so the FIRST write to a
+// fresh <topic>.dlq triggers ASYNC broker-side topic creation and returns
+// UnknownTopicOrPartition before that creation completes (observed live,
+// T-HARDEN Wave 3). kafka-go does not re-fetch an uncommitted offset in the
+// same session, so without this retry the poison would sit UNPARKED until the
+// next consumer rebalance/restart — a promptness bug, not a loss (the caller
+// still withholds the commit). Retrying after a short, growing backoff lets
+// auto-creation finish so the poison parks in-session.
+//
+// Only the topic-creation race is retried. Any other write error (broker
+// unreachable, auth, etc.) returns immediately and unwrapped so the caller
+// leaves the offset uncommitted and the message is redelivered — the
+// fail-closed, no-loss property is preserved unchanged. Exhausting the retries
+// likewise returns the error, so a topic that genuinely never appears still
+// withholds the commit rather than dropping the poison.
+func (c *KafkaConsumer) deadLetterWriteWithRetry(ctx context.Context, dlqMsg kafka.Message) error {
+	attempts := c.cfg.DeadLetterCreateRetries + 1
+	backoff := c.cfg.DeadLetterCreateBackoff
+
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = c.dlqWriter.WriteMessages(ctx, dlqMsg); err == nil {
+			return nil
+		}
+		// A genuinely different produce error must not be masked as the
+		// self-healing topic-creation race — return it so the commit is
+		// withheld and the message redelivered.
+		if !isUnknownTopicOrPartition(err) {
+			return err
+		}
+		if i == attempts-1 {
+			break // race did not clear within the retry budget
+		}
+		c.cfg.Logger.Warn("dead-letter topic not yet created, retrying write",
+			"topic", dlqMsg.Topic,
+			"attempt", i+1,
+			"max_attempts", attempts,
+			"backoff", backoff,
+		)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+		backoff = min(backoff*2, c.cfg.DeadLetterCreateMaxBackoff)
+	}
+	return err
+}
+
+// isUnknownTopicOrPartition reports whether err is the broker's
+// UnknownTopicOrPartition (code 3) — the signal that a not-yet-created topic is
+// being auto-created. Mirrors isTopicAlreadyExists in publisher.go: check the
+// typed kafka.Error first, then fall back to the stable message fragment for
+// wrapper shapes errors.Is/As can't traverse (e.g. kafka.WriteErrors).
+func isUnknownTopicOrPartition(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, kafka.UnknownTopicOrPartition) {
+		return true
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "unknown topic or partition")
 }
 
 // validateMessagePayload decodes the CloudEvent data and validates it
