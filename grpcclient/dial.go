@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/sentiae/platform-kit/spiffe"
+	"github.com/sentiae/platform-kit/tenant"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
@@ -59,6 +60,14 @@ func Dial(ctx context.Context, cfg Config, extraOpts ...grpc.DialOption) (*grpc.
 		creds = spiffe.ClientCreds(cfg.Source, spiffe.ServiceID(cfg.ServerService))
 	}
 
-	opts := append([]grpc.DialOption{grpc.WithTransportCredentials(creds)}, extraOpts...)
+	// Org-propagation interceptors are installed UNCONDITIONALLY (no toggle — a
+	// flag is the fail-open disease). They fill tenant/caller identity metadata
+	// FILL-IF-ABSENT, so they are behavior-neutral for callers that already set
+	// the keys while making org survive the hop for those that don't.
+	opts := append([]grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
+		grpc.WithChainUnaryInterceptor(tenant.UnaryClientPropagation()),
+		grpc.WithChainStreamInterceptor(tenant.StreamClientPropagation()),
+	}, extraOpts...)
 	return grpc.NewClient(cfg.Endpoint, opts...)
 }

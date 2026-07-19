@@ -30,6 +30,7 @@ import (
 	"github.com/sentiae/platform-kit/config"
 	"github.com/sentiae/platform-kit/interceptor"
 	"github.com/sentiae/platform-kit/spiffe"
+	"github.com/sentiae/platform-kit/tenant"
 	"github.com/soheilhy/cmux"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
 	"google.golang.org/grpc"
@@ -77,6 +78,15 @@ type Builder struct {
 // New builds the server(s) for the given mode. The variadic opts are the
 // service's base server options (its ChainUnary/ChainStream interceptors and
 // any others); transport credentials are added by New per mode.
+//
+// Interceptor ordering (execution order, outermost → innermost): the SVID
+// interceptors are PREPENDED first (they extract the peer identity every later
+// layer reads); then the service's own opts (Auth, any OrgField); then the
+// org-propagation interceptors, APPENDED innermost so they run AFTER Auth has
+// established the principal and AFTER any service OrgField has resolved a proto
+// org — exactly what inboundPropagation needs to re-verify an asserted org and
+// to honor an already-scoped active org. Propagation is installed on every
+// underlying server (both transports in permissive mode).
 //
 // New does not panic. Fail-closed (D-162a L2): "strict" with a nil Source is an
 // invalid configuration — New builds NO server and records a build error naming
@@ -129,21 +139,35 @@ func New(cfg Config, opts ...grpc.ServerOption) *Builder {
 		grpc.ChainStreamInterceptor(interceptor.StreamSVID()),
 	}
 
+	// Org-propagation interceptors, APPENDED after the service's own opts so
+	// they run innermost — after Auth (principal) and any service OrgField
+	// (active org). Installed unconditionally (fill-if-absent, behavior-neutral).
+	propagationOpts := []grpc.ServerOption{
+		grpc.ChainUnaryInterceptor(tenant.UnaryInboundPropagation()),
+		grpc.ChainStreamInterceptor(tenant.StreamInboundPropagation()),
+	}
+
+	// serverOpts concatenates svid (prepended) + the service's base opts +
+	// propagation (appended) into the option order gRPC chains in.
+	serverOpts := func(base ...grpc.ServerOption) []grpc.ServerOption {
+		out := make([]grpc.ServerOption, 0, len(base)+len(svidOpts)+len(propagationOpts))
+		out = append(out, base...)
+		out = append(out, opts...)
+		out = append(out, propagationOpts...)
+		return out
+	}
+
 	switch mode {
 	case config.MTLSModePermissive:
-		b.plain = grpc.NewServer(append(append([]grpc.ServerOption{}, svidOpts...), opts...)...)
-		mtlsOpts := append([]grpc.ServerOption{grpc.Creds(spiffe.ServerCreds(cfg.Source))}, svidOpts...)
-		mtlsOpts = append(mtlsOpts, opts...)
-		b.mtls = grpc.NewServer(mtlsOpts...)
+		b.plain = grpc.NewServer(serverOpts(svidOpts...)...)
+		b.mtls = grpc.NewServer(serverOpts(append([]grpc.ServerOption{grpc.Creds(spiffe.ServerCreds(cfg.Source))}, svidOpts...)...)...)
 		b.servers = []*grpc.Server{b.plain, b.mtls}
 	case config.MTLSModeStrict:
-		mtlsOpts := append([]grpc.ServerOption{grpc.Creds(spiffe.ServerCreds(cfg.Source))}, svidOpts...)
-		mtlsOpts = append(mtlsOpts, opts...)
-		b.mtls = grpc.NewServer(mtlsOpts...)
+		b.mtls = grpc.NewServer(serverOpts(append([]grpc.ServerOption{grpc.Creds(spiffe.ServerCreds(cfg.Source))}, svidOpts...)...)...)
 		b.servers = []*grpc.Server{b.mtls}
 	default: // off — the only value reaching here; unrecognized modes are
 		// rejected above, so default no longer swallows a typo into plaintext.
-		b.plain = grpc.NewServer(append(append([]grpc.ServerOption{}, svidOpts...), opts...)...)
+		b.plain = grpc.NewServer(serverOpts(svidOpts...)...)
 		b.servers = []*grpc.Server{b.plain}
 	}
 
