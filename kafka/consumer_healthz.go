@@ -17,9 +17,10 @@ type ConsumerLagEntry struct {
 	LastEventType string    `json:"last_event_type"`
 
 	// Diagnostic extras kept below the required fields.
-	GroupID        string `json:"group_id,omitempty"`
-	MessagesOK     int64  `json:"messages_ok"`
-	MessagesFailed int64  `json:"messages_failed"`
+	GroupID              string `json:"group_id,omitempty"`
+	MessagesOK           int64  `json:"messages_ok"`
+	MessagesFailed       int64  `json:"messages_failed"`
+	MessagesDeadLettered int64  `json:"messages_dead_lettered"`
 }
 
 // ConsumersHealthResponse is the JSON body returned by ConsumersHealthzHandler.
@@ -74,16 +75,20 @@ func ConsumersHealthzHandler(service string, consumers ...*KafkaConsumer) http.H
 			}
 			for _, h := range c.Health() {
 				entry := ConsumerLagEntry{
-					Topic:          h.Topic,
-					Lag:            h.Lag,
-					LastCommit:     h.LastProcessed,
-					LastEventType:  h.LastEventType,
-					GroupID:        h.GroupID,
-					MessagesOK:     h.MessagesOK,
-					MessagesFailed: h.MessagesFailed,
+					Topic:                h.Topic,
+					Lag:                  h.Lag,
+					LastCommit:           h.LastProcessed,
+					LastEventType:        h.LastEventType,
+					GroupID:              h.GroupID,
+					MessagesOK:           h.MessagesOK,
+					MessagesFailed:       h.MessagesFailed,
+					MessagesDeadLettered: h.MessagesDeadLettered,
 				}
 				resp.Consumers = append(resp.Consumers, entry)
-				if h.MessagesFailed > 0 || h.Lag > 10_000 {
+				// A consumer parking poison in a DLQ must NOT report healthy — a
+				// silently-growing DLQ is exactly the failure this surface exists
+				// to make visible.
+				if h.MessagesFailed > 0 || h.MessagesDeadLettered > 0 || h.Lag > 10_000 {
 					resp.Status = "degraded"
 				}
 			}

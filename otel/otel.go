@@ -32,6 +32,7 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
+	prometheusbridge "go.opentelemetry.io/contrib/bridges/prometheus"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploggrpc"
@@ -114,9 +115,16 @@ func Init(ctx context.Context, cfg Config) (Shutdown, error) {
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("otel: metric exporter: %w", err), tp.Shutdown(ctx))
 	}
+	// Bridge the default Prometheus registry (promauto metrics — e.g. the kafka
+	// DLQ counter, interceptor request metrics) into the OTLP export path, so
+	// every promauto metric rides the SAME pipeline as OTel-native metrics with
+	// no second scrape plane. WithProducer registers the bridge as an additional
+	// metric source on the periodic reader.
 	mp := sdkmetric.NewMeterProvider(
 		sdkmetric.WithResource(res),
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp)),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(metricExp,
+			sdkmetric.WithProducer(prometheusbridge.NewMetricProducer()),
+		)),
 	)
 	otel.SetMeterProvider(mp)
 

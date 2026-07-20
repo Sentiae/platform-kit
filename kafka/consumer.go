@@ -825,6 +825,9 @@ func (c *KafkaConsumer) recordDeadLetter(topic string) {
 	}
 	h.MessagesDeadLettered++
 	c.healthMu.Unlock()
+	// Prometheus counter (rides OTLP via the otel.Init bridge). Kept outside the
+	// healthMu critical section — the CounterVec is independently synchronized.
+	messagesDeadLetteredTotal.WithLabelValues(topic, c.cfg.GroupID).Inc()
 }
 
 // Close closes the reader and the default dead-letter writer.
