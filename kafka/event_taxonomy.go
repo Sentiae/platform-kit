@@ -892,6 +892,12 @@ const (
 	EventIdentityInvitationSent     = "identity.invitation.sent"
 	EventIdentityInvitationAccepted = "identity.invitation.accepted"
 	EventIdentityInvitationRevoked  = "identity.invitation.revoked"
+
+	// EventIdentityInviteLinkRedeemed is the distinct business/audit event for a
+	// bearer invite-link redemption. It deliberately does NOT reuse
+	// identity.invitation.accepted (whose schema requires an invited email and
+	// whose consumers key on invitation_id) — a link has neither.
+	EventIdentityInviteLinkRedeemed = "identity.invite_link.redeemed"
 )
 
 // ---------- Platform domain ---------------------------------------------
@@ -1757,6 +1763,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("identity.invitation.accepted", []string{"email"}, `"email":{"type":"string"}`)},
 	{EventIdentityInvitationRevoked, "identity", "An invitation was revoked", "identity-service",
 		dataSchema("identity.invitation.revoked", []string{"email"}, `"email":{"type":"string"}`)},
+	{EventIdentityInviteLinkRedeemed, "identity", "A bearer invite link was redeemed (membership projected + ledger-recorded)", "identity-service",
+		dataSchema("identity.invite_link.redeemed", []string{"link_id", "organization_id", "redeemed_by_user_id"}, `"link_id":{"type":"string"},"organization_id":{"type":"string"},"redeemed_by_user_id":{"type":"string"},"team_id":{"type":"string"},"org_member_created":{"type":"boolean"}`)},
 
 	// ---- Work aliases / additions --------------------------------------
 	{EventWorkCriterionCreated, "work", "Acceptance criterion created (alias)", "work-service",

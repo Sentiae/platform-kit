@@ -36,3 +36,29 @@ import "github.com/google/uuid"
 // build if the two diverge. Consumers outside a domain layer (use cases,
 // adapters) should import this constant directly rather than add a mirror.
 var SystemUserID = uuid.MustParse("00000000-0000-0000-0000-000000000001")
+
+// EveAgentID is the platform's single well-known AI-agent principal: the actor
+// attributed to content Eve authors (chat replies, page/body edits, autonomous
+// turns). Like SystemUserID it is a real, seeded principal rather than a
+// sentinel -- the evidence spine requires every message/edit author to resolve
+// to a principal, and Eve's UUID was previously written as messages.author_id
+// (conversation-service) and as a body-edit actor (bff) with NO backing row, so
+// the author resolved to nobody. That is the same "an actor that is not a
+// principal" failure SystemUserID exists to prevent (C3: one principal
+// namespace; agents are rows, not per-service conventions).
+//
+// The value intentionally matches conversation-service's pre-existing EVE actor
+// (the one persisted in live messages.author_id), unifying the two competing
+// constants (conversation's ...e7e0 and bff's 0e7e0000-...) onto ONE canonical
+// id rather than minting a third.
+//
+// Eve is a principal, NOT a D-177 probe-agent enrollment: D-177 credentials
+// untrusted binaries on (eventually) customer hardware via per-agent Vault-PKI
+// certs; Eve runs inside the platform trust boundary as a feature. When the C3
+// principals registry lands, this id becomes a kind=agent row; this seed is
+// forward-compatible with it.
+//
+// The row backing this id is seeded by identity-service (SeedEvePrincipal, NULL
+// password_hash so login is impossible, eve@sentiae.invalid). This constant and
+// that seed are two halves of one fact: change neither alone.
+var EveAgentID = uuid.MustParse("00000000-0000-0000-0000-00000000e7e0")
