@@ -47,21 +47,45 @@ func TestLiveness_ReturnsOK(t *testing.T) {
 	}
 }
 
-func TestReadiness_NoChecks_ReturnsOK(t *testing.T) {
+// A checker-less /ready must FAIL CLOSED (503) — a silent 200 with no checks is
+// the fail-open Wave-8 kills. (Replaces the old TestReadiness_NoChecks_ReturnsOK,
+// which asserted the fail-open as correct.)
+func TestReadiness_NoChecks_FailsClosed(t *testing.T) {
 	h := NewHandler(Config{})
 	rec := httptest.NewRecorder()
 	h.handleReady(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 (fail-closed), got %d", rec.Code)
 	}
-
 	var resp Response
 	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
-	if resp.Status != StatusUp {
-		t.Fatalf("expected status %q, got %q", StatusUp, resp.Status)
+	if resp.Status != StatusDown {
+		t.Fatalf("expected status %q, got %q", StatusDown, resp.Status)
+	}
+	if resp.NoChecks == "" {
+		t.Fatalf("expected a visible NoChecks refusal message, got empty")
+	}
+}
+
+// An EXPLICIT no-checks declaration reports up, but names the reason (visible,
+// never implicit) — mirrors posture.None.
+func TestReadiness_NoChecks_ExplicitOptOut(t *testing.T) {
+	h := NewHandler(Config{NoChecksReason: "stateless proxy, no dependencies"})
+	rec := httptest.NewRecorder()
+	h.handleReady(rec, httptest.NewRequest(http.MethodGet, "/ready", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for explicit opt-out, got %d", rec.Code)
+	}
+	var resp Response
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Status != StatusUp || resp.NoChecks != "stateless proxy, no dependencies" {
+		t.Fatalf("expected up + reason surfaced, got status=%q noChecks=%q", resp.Status, resp.NoChecks)
 	}
 }
 

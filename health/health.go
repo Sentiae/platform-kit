@@ -45,6 +45,11 @@ type ComponentStatus struct {
 type Response struct {
 	Status     Status            `json:"status"`
 	Components []ComponentStatus `json:"components,omitempty"`
+	// NoChecks is set on /ready when the handler has zero checkers: either the
+	// explicit Config.NoChecksReason (status stays up) or the fail-closed refusal
+	// message (status down). It makes a checker-less readiness surface VISIBLE —
+	// a silent 200 with no checks is the fail-open this field exists to kill.
+	NoChecks string `json:"no_checks,omitempty"`
 }
 
 // Checker performs a health check for a single component.
@@ -113,8 +118,16 @@ type KafkaDialer interface {
 
 // Config configures the health handler.
 type Config struct {
-	// Checks are the readiness checkers to run. Optional.
+	// Checks are the readiness checkers to run. When empty, /ready fails closed
+	// (503) UNLESS NoChecksReason is set — a checker-less service that silently
+	// reports ready is the fail-open Wave-8 closes.
 	Checks []Checker
+
+	// NoChecksReason, when non-empty, is an EXPLICIT declaration that this handler
+	// intentionally has no readiness checkers (e.g. a pure stateless proxy). /ready
+	// then reports up but surfaces the reason in Response.NoChecks — the decision
+	// is named and visible, never implicit. Mirrors posture.None.
+	NoChecksReason string
 
 	// Timeout for each individual check. Defaults to 5s.
 	Timeout time.Duration
@@ -122,8 +135,9 @@ type Config struct {
 
 // Handler serves /health and /ready endpoints.
 type Handler struct {
-	checks  []Checker
-	timeout time.Duration
+	checks         []Checker
+	noChecksReason string
+	timeout        time.Duration
 }
 
 // NewHandler creates a health [Handler] from the given [Config].
@@ -133,8 +147,9 @@ func NewHandler(cfg Config) *Handler {
 		timeout = 5 * time.Second
 	}
 	return &Handler{
-		checks:  cfg.Checks,
-		timeout: timeout,
+		checks:         cfg.Checks,
+		noChecksReason: cfg.NoChecksReason,
+		timeout:        timeout,
 	}
 }
 
@@ -163,6 +178,20 @@ func (h *Handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (h *Handler) handleReady(w http.ResponseWriter, r *http.Request) {
+	// Zero-checker case: a silent 200 here is the fail-open. Report closed (503)
+	// unless the checker-less surface was declared explicitly.
+	if len(h.checks) == 0 {
+		if h.noChecksReason != "" {
+			writeJSON(w, http.StatusOK, Response{Status: StatusUp, NoChecks: h.noChecksReason})
+			return
+		}
+		writeJSON(w, http.StatusServiceUnavailable, Response{
+			Status:   StatusDown,
+			NoChecks: "no readiness checkers configured — refusing to report ready (set Config.Checks, or Config.NoChecksReason to opt out explicitly)",
+		})
+		return
+	}
+
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
