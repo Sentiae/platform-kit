@@ -76,6 +76,25 @@ func TestValidatePayload_UnknownEvent(t *testing.T) {
 	}
 }
 
+func TestCatalogSystemTopologyChanged_TopicAndOwnership(t *testing.T) {
+	e, ok := LookupEvent(EventCatalogSystemTopologyChanged)
+	if !ok {
+		t.Fatalf("event %q not registered", EventCatalogSystemTopologyChanged)
+	}
+	if EventCatalogSystemTopologyChanged != "catalog.system.topology_changed" {
+		t.Fatalf("unexpected event type constant: %q", EventCatalogSystemTopologyChanged)
+	}
+	if got, want := e.FullTopic("sentiae"), "sentiae.catalog.system"; got != want {
+		t.Fatalf("wire topic = %q, want %q", got, want)
+	}
+	if got, want := e.Owner, "catalog-service"; got != want {
+		t.Fatalf("producer (Owner) = %q, want %q", got, want)
+	}
+	if got, want := e.Domain, "catalog"; got != want {
+		t.Fatalf("domain = %q, want %q", got, want)
+	}
+}
+
 func TestNoopPublisher_UnaffectedByValidation(t *testing.T) {
 	// The no-op publisher should accept anything — it has no validation hook.
 	np := NewNoopPublisher()

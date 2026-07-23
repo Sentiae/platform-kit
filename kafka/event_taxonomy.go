@@ -373,6 +373,12 @@ const (
 	EventCatalogCloudEnvironmentDegraded  = "catalog.cloud_environment.degraded"
 	EventCatalogCloudEnvironmentRevoked   = "catalog.cloud_environment.revoked"
 
+	// System topology lifecycle. Emitted by catalog-service via its outbox when a
+	// product's system model (workloads/infra/routes/policies) changes; consumed by
+	// delivery. Own per-aggregate wire topic sentiae.catalog.system, keyed by
+	// product_id (topicFromEventType derives it from the catalog.system.* type).
+	EventCatalogSystemTopologyChanged = "catalog.system.topology_changed"
+
 	// D-052 successors of the extracted legacy ops.service.* /
 	// ops.ownership.changed / ops.component.body_edited events. catalog
 	// dual-emits both the legacy type and its successor during the migration
@@ -1320,6 +1326,11 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("catalog.cloud_environment.degraded", []string{"cloud_environment_id", "provider"}, `"cloud_environment_id":{"type":"string"},"provider":{"type":"string"},"auth_mode":{"type":"string"},"mode":{"type":"string"},"status":{"type":"string"}`)},
 	{EventCatalogCloudEnvironmentRevoked, "catalog", "A CloudEnvironment was revoked (terminal)", "catalog-service",
 		dataSchema("catalog.cloud_environment.revoked", []string{"cloud_environment_id", "provider"}, `"cloud_environment_id":{"type":"string"},"provider":{"type":"string"},"auth_mode":{"type":"string"},"mode":{"type":"string"},"status":{"type":"string"}`)},
+
+	// System topology change (emitted by catalog via its outbox; consumed by
+	// delivery). Rides the wire topic sentiae.catalog.system, keyed by product_id.
+	{EventCatalogSystemTopologyChanged, "catalog", "A product's system topology (workloads/infra/routes/policies) changed", "catalog-service",
+		dataSchema("catalog.system.topology_changed", []string{"product_id", "graph_id", "changed"}, `"product_id":{"type":"string"},"graph_id":{"type":"string"},"changed":{"type":"array","items":{"type":"string","enum":["workloads","infra","routes","policies"]}}`)},
 
 	// D-052 successors of the legacy ops.service.* / ops.ownership.changed /
 	// ops.component.body_edited events (dual-emitted by catalog during the
