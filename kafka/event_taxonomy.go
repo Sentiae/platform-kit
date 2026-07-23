@@ -599,6 +599,12 @@ const (
 	EventChatTypingStarted   = "chat.typing.started"
 	EventChatTypingStopped   = "chat.typing.stopped"
 	EventChatPresenceUpdated = "chat.presence.updated"
+	// EventChatPresenceChanged is emitted by conversation-service's presence
+	// sweeper on every user online→away→offline transition (idle timeout).
+	// Cross-service consumers (BFF, notification-service) that track
+	// platform-wide presence subscribe to this rather than the websocket
+	// fan-out "chat.presence.updated".
+	EventChatPresenceChanged = "chat.presence.changed"
 	EventChatVoiceState      = "chat.voice.state.updated"
 	EventChatEveEvent        = "chat.eve.event"
 )
@@ -1467,6 +1473,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("chat.typing.stopped", nil, `"channel_id":{"type":"string"},"user_id":{"type":"string"}`)},
 	{EventChatPresenceUpdated, "chat", "Chat presence updated", "conversation-service",
 		dataSchema("chat.presence.updated", nil, `"user_id":{"type":"string"},"status":{"type":"string"}`)},
+	{EventChatPresenceChanged, "chat", "A user's presence transitioned (online/away/offline) via idle-timeout sweep", "conversation-service",
+		dataSchema("chat.presence.changed", nil, `"user_id":{"type":"string"},"previous_state":{"type":"string"},"state":{"type":"string"},"reason":{"type":"string"},"at":{"type":"string"}`)},
 	{EventChatVoiceState, "chat", "Voice state updated", "conversation-service",
 		dataSchema("chat.voice.state.updated", nil, `"channel_id":{"type":"string"},"user_id":{"type":"string"}`)},
 	{EventChatEveEvent, "chat", "Eve agent loop event", "conversation-service",
