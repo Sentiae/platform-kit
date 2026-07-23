@@ -658,6 +658,19 @@ const (
 	EventGitLegacyReleaseCreated    = "sentiae.git.release.created"
 )
 
+// ---------- TimeTravel domain (cross-cutting snapshot fan-out) -----------
+//
+// platform-kit/timetravel's KafkaRecorder publishes this event so services
+// that don't own the entity_snapshots table can decouple their hot path from
+// snapshot persistence; the central consumer (ops-service) persists the row.
+// The type carries the legacy "sentiae." prefix (it predates the naming
+// convention), so it is registered with domain "sentiae" like the git legacy
+// block. Producers: any service wiring a timetravel.NewKafkaRecorder
+// (git-service, work-service). Consumer: ops-service.
+const (
+	EventTimeTravelEntityChanged = "sentiae.timetravel.entity.changed"
+)
+
 // ---------- Data domain --------------------------------------------------
 
 const (
@@ -1966,6 +1979,10 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("sentiae.git.ai_review.completed", nil, `"pr_number":{"type":"integer"},"verdict":{"type":"string"}`)},
 	{EventGitLegacyReleaseCreated, "sentiae", "Release created (legacy)", "git-service",
 		dataSchema("sentiae.git.release.created", nil, `"tag":{"type":"string"}`)},
+
+	// ---- TimeTravel snapshot fan-out ---------------------------------
+	{EventTimeTravelEntityChanged, "sentiae", "Entity snapshot changed (timetravel fan-out)", "ops-service",
+		dataSchema("sentiae.timetravel.entity.changed", nil, `"kind":{"type":"string"},"entity_id":{"type":"string"},"writer_service":{"type":"string"},"payload":{"type":"string"},"changed_by":{"type":"string"},"change_reason":{"type":"string"}`)},
 
 	// ---- Hierarchical spec events ------------------------------------
 	{EventWorkSpecChildCreated, "work", "A child spec was created under a parent spec", "work-service",

@@ -35,6 +35,11 @@ var knownLegacyDoublePrefix = map[string]bool{
 	"sentiae.git.session.closed":         true,
 	"sentiae.git.ai_review.completed":    true,
 	"sentiae.git.release.created":        true,
+	// timetravel snapshot fan-out: the type is defined by
+	// platform-kit/timetravel.EventType (predates the naming convention) and
+	// is emitted by every service wiring a KafkaRecorder; registered under the
+	// legacy "sentiae" domain like the git block above.
+	"sentiae.timetravel.entity.changed": true,
 }
 
 // knownDomainMismatch is the explicit allow-list of taxonomy entries whose
