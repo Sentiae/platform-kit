@@ -3,12 +3,24 @@
 // conversion: with Mode "off" (the default) it dials insecure exactly as
 // today; with "permissive"/"strict" it dials with SPIFFE mTLS credentials
 // authorizing the named server SVID.
+//
+// FAIL-CLOSED (D-162a L2): this is the outbound twin of grpcserver's
+// refuse-to-serve. A security posture is never selected by the ABSENCE of a
+// value. "permissive" is the DECLARED escape hatch — a service that opts into
+// permissive tolerates plaintext by design, so a SPIRE hiccup (nil Source)
+// degrades a dial to plaintext with a LOUD warn rather than wedging it.
+// "strict" means strict: a strict client with no SVID source REFUSES TO DIAL
+// (Dial returns an error naming the control) rather than silently opening a
+// plaintext connection while claiming to require mutual TLS.
 package grpcclient
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/sentiae/platform-kit/config"
 	"github.com/sentiae/platform-kit/spiffe"
 	"github.com/sentiae/platform-kit/tenant"
 	"github.com/spiffe/go-spiffe/v2/workloadapi"
@@ -26,8 +38,9 @@ type Config struct {
 	// Empty is treated as "off". See config.MTLSMode.
 	Mode string
 
-	// Source is the SPIFFE X509 source used for mTLS. When nil (or Mode is
-	// off), the dial falls back to insecure credentials.
+	// Source is the SPIFFE X509 source used for mTLS. When nil under off/
+	// permissive the dial falls back to insecure credentials (permissive warns
+	// loudly); when nil under strict the dial is REFUSED (Dial returns an error).
 	Source *workloadapi.X509Source
 
 	// ServerService is the short service name of the server being dialed
@@ -41,10 +54,18 @@ type Config struct {
 	Timeout time.Duration
 }
 
-// Dial builds a *grpc.ClientConn for the mesh. When cfg.Mode is off/empty or
-// cfg.Source is nil it uses insecure credentials (today's behavior); otherwise
-// it uses SPIFFE mTLS client credentials authorizing the server SVID. Extra
-// dial options are appended after the transport credentials.
+// Dial builds a *grpc.ClientConn for the mesh. Transport security mirrors
+// grpcserver.New (fail-closed, D-162a L2):
+//
+//   - off/empty     — insecure credentials (today's behavior).
+//   - permissive    — SPIFFE mTLS client credentials when cfg.Source is set;
+//     with a nil Source it degrades to insecure with a LOUD warn (the declared
+//     escape hatch — a SPIRE hiccup must be VISIBLE, never silent).
+//   - strict        — SPIFFE mTLS client credentials; with a nil Source Dial
+//     RETURNS AN ERROR naming the control and NEVER returns a conn, rather than
+//     silently dialing plaintext under a "strict" posture.
+//
+// Extra dial options are appended after the transport credentials.
 func Dial(ctx context.Context, cfg Config, extraOpts ...grpc.DialOption) (*grpc.ClientConn, error) {
 	if cfg.Timeout > 0 {
 		var cancel context.CancelFunc
@@ -53,10 +74,30 @@ func Dial(ctx context.Context, cfg Config, extraOpts ...grpc.DialOption) (*grpc.
 	}
 	_ = ctx // grpc.NewClient is lazy; ctx bounds caller-added blocking options.
 
+	mode := cfg.Mode
+	if mode == "" {
+		mode = config.MTLSModeOff
+	}
+
 	var creds credentials.TransportCredentials
-	if cfg.Mode == "" || cfg.Mode == "off" || cfg.Source == nil {
+	switch {
+	case mode == config.MTLSModeStrict && cfg.Source == nil:
+		// FAIL-CLOSED: strict mTLS required but no SVID source. Refuse to dial
+		// rather than silently opening a plaintext connection under a "strict"
+		// posture (the outbound twin of grpcserver's refuse-to-serve).
+		slog.Default().Error("grpcclient: strict mTLS required but SPIFFE source unavailable; refusing to dial",
+			"server", cfg.ServerService, "mode", mode)
+		return nil, fmt.Errorf("grpcclient: configured for strict mTLS but no SPIFFE/SVID source available; refusing to dial %q (run in permissive mode if plaintext is acceptable during a SPIRE outage)", cfg.ServerService)
+	case cfg.Source == nil:
+		// off/permissive with no source → plaintext. Permissive is the declared
+		// escape hatch, but a SPIRE hiccup on it must not be silent: warn loudly
+		// so the degraded edge is visible. off is the expected default: quiet.
+		if mode == config.MTLSModePermissive {
+			slog.Default().Warn("grpcclient: permissive mTLS requested but SPIFFE source unavailable; degrading dial to plaintext",
+				"server", cfg.ServerService, "mode", mode)
+		}
 		creds = insecure.NewCredentials()
-	} else {
+	default:
 		creds = spiffe.ClientCreds(cfg.Source, spiffe.ServiceID(cfg.ServerService))
 	}
 
