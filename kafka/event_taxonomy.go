@@ -361,6 +361,13 @@ const (
 	// refused because the image had critical findings, its scan failed, or its
 	// supply-chain (signature/attestation) did not verify.
 	EventDeliverySecurityBlocked = "delivery.security.blocked"
+
+	// EventDeliverySystemPlanned is emitted when delivery plans a system release
+	// for a product×environment (CP4.5 §9 #2). Own per-aggregate wire topic
+	// sentiae.delivery.system, keyed by product_id (topicFromEventType derives it
+	// from the delivery.system.* type). Consumed (documentary) by notification
+	// (approval evidence) and portal.
+	EventDeliverySystemPlanned = "delivery.system.planned"
 )
 
 // ---------- Catalog domain (system-model lifecycle) -----------------------
@@ -1324,6 +1331,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("delivery.retarget.completed", []string{"component_id", "env"}, `"component_id":{"type":"string"},"env":{"type":"string"},"from_target":{"type":"string"},"to_target":{"type":"string"}`)},
 	{EventDeliverySecurityBlocked, "delivery", "the SEC-04 gate refused a release (findings at or above the resolved severity threshold, a failed/timed-out scan, or an unverified supply chain)", "delivery-service",
 		dataSchema("delivery.security.blocked", []string{"component_id"}, `"component_id":{"type":"string"},"env":{"type":"string"},"image_ref":{"type":"object"},"reason":{"type":"string"},"findings_critical":{"type":"integer"},"findings_high":{"type":"integer"},"findings_medium":{"type":"integer"},"findings_low":{"type":"integer"},"severity_threshold":{"type":"string"},"scan_id":{"type":"string"}`)},
+	{EventDeliverySystemPlanned, "delivery", "delivery planned a system release for a product×environment (CP4.5 §9 #2)", "delivery-service",
+		dataSchema("delivery.system.planned", []string{"product_id", "env_id", "release_id", "revision"}, `"product_id":{"type":"string"},"env_id":{"type":"string"},"release_id":{"type":"string"},"revision":{"type":"string"},"plan_summary":{"type":"string"},"destructive":{"type":"boolean"}`)},
 
 	// Catalog — system-model lifecycle (emitted by catalog via its outbox).
 	{EventCatalogComponentLifecycleChanged, "catalog", "A component's lifecycle advanced (planned→building→testing→live)", "catalog-service",

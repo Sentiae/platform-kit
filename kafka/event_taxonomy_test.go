@@ -96,6 +96,25 @@ func TestCatalogSystemTopologyChanged_TopicAndOwnership(t *testing.T) {
 	}
 }
 
+func TestDeliverySystemPlanned_TopicAndOwnership(t *testing.T) {
+	e, ok := LookupEvent(EventDeliverySystemPlanned)
+	if !ok {
+		t.Fatalf("event %q not registered", EventDeliverySystemPlanned)
+	}
+	if EventDeliverySystemPlanned != "delivery.system.planned" {
+		t.Fatalf("unexpected event type constant: %q", EventDeliverySystemPlanned)
+	}
+	if got, want := e.FullTopic("sentiae"), "sentiae.delivery.system"; got != want {
+		t.Fatalf("wire topic = %q, want %q", got, want)
+	}
+	if got, want := e.Owner, "delivery-service"; got != want {
+		t.Fatalf("producer (Owner) = %q, want %q", got, want)
+	}
+	if got, want := e.Domain, "delivery"; got != want {
+		t.Fatalf("domain = %q, want %q", got, want)
+	}
+}
+
 func TestWorkFeatureMembershipEvents_TopicAndOwnership(t *testing.T) {
 	cases := []struct {
 		constVal string
