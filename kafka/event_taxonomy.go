@@ -937,6 +937,14 @@ const (
 	// identity.invitation.accepted (whose schema requires an invited email and
 	// whose consumers key on invitation_id) — a link has neither.
 	EventIdentityInviteLinkRedeemed = "identity.invite_link.redeemed"
+
+	// EventIdentityTenantSecretSealedForOrg is the Branch-A seal audit event
+	// (CP4.5 §9 #3 / D-183). Emitted when a tenant secret is sealed for an org.
+	// It carries NO secret value — only org/subpath/field/caller identity
+	// (D-183 guarantee 4, D-085/I32). Own aggregate wire topic
+	// sentiae.identity.tenant_secret (topicFromEventType derives it from the
+	// identity.tenant_secret.* type).
+	EventIdentityTenantSecretSealedForOrg = "identity.tenant_secret.sealed_for_org"
 )
 
 // ---------- Platform domain ---------------------------------------------
@@ -1822,6 +1830,8 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("identity.invitation.revoked", []string{"email"}, `"email":{"type":"string"}`)},
 	{EventIdentityInviteLinkRedeemed, "identity", "A bearer invite link was redeemed (membership projected + ledger-recorded)", "identity-service",
 		dataSchema("identity.invite_link.redeemed", []string{"link_id", "organization_id", "redeemed_by_user_id"}, `"link_id":{"type":"string"},"organization_id":{"type":"string"},"redeemed_by_user_id":{"type":"string"},"team_id":{"type":"string"},"org_member_created":{"type":"boolean"}`)},
+	{EventIdentityTenantSecretSealedForOrg, "identity", "A tenant secret was sealed for an org (Branch-A seal audit, CP4.5 §9 #3 / D-183) — carries NO secret value, only org/subpath/field/caller identity", "identity-service",
+		dataSchema("identity.tenant_secret.sealed_for_org", []string{"organization_id", "subpath", "field", "caller_spiffe"}, `"organization_id":{"type":"string"},"subpath":{"type":"string"},"field":{"type":"string"},"caller_spiffe":{"type":"string"}`)},
 
 	// ---- Work aliases / additions --------------------------------------
 	{EventWorkCriterionCreated, "work", "Acceptance criterion created (alias)", "work-service",

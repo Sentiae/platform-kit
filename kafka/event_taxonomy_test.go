@@ -115,6 +115,25 @@ func TestDeliverySystemPlanned_TopicAndOwnership(t *testing.T) {
 	}
 }
 
+func TestIdentityTenantSecretSealedForOrg_TopicAndOwnership(t *testing.T) {
+	e, ok := LookupEvent(EventIdentityTenantSecretSealedForOrg)
+	if !ok {
+		t.Fatalf("event %q not registered", EventIdentityTenantSecretSealedForOrg)
+	}
+	if EventIdentityTenantSecretSealedForOrg != "identity.tenant_secret.sealed_for_org" {
+		t.Fatalf("unexpected event type constant: %q", EventIdentityTenantSecretSealedForOrg)
+	}
+	if got, want := e.FullTopic("sentiae"), "sentiae.identity.tenant_secret"; got != want {
+		t.Fatalf("wire topic = %q, want %q", got, want)
+	}
+	if got, want := e.Owner, "identity-service"; got != want {
+		t.Fatalf("producer (Owner) = %q, want %q", got, want)
+	}
+	if got, want := e.Domain, "identity"; got != want {
+		t.Fatalf("domain = %q, want %q", got, want)
+	}
+}
+
 func TestWorkFeatureMembershipEvents_TopicAndOwnership(t *testing.T) {
 	cases := []struct {
 		constVal string
