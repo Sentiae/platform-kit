@@ -2,6 +2,7 @@ package kafka
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 )
@@ -92,6 +93,48 @@ func TestCatalogSystemTopologyChanged_TopicAndOwnership(t *testing.T) {
 	}
 	if got, want := e.Domain, "catalog"; got != want {
 		t.Fatalf("domain = %q, want %q", got, want)
+	}
+}
+
+func TestWorkFeatureMembershipEvents_TopicAndOwnership(t *testing.T) {
+	cases := []struct {
+		constVal string
+		wantType string
+	}{
+		{EventWorkFeatureProductAssigned, "work.feature.product_assigned"},
+		{EventWorkFeatureComponentLinked, "work.feature.component_linked"},
+		{EventWorkFeatureComponentUnlinked, "work.feature.component_unlinked"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.wantType, func(t *testing.T) {
+			if tc.constVal != tc.wantType {
+				t.Fatalf("unexpected event type constant: %q, want %q", tc.constVal, tc.wantType)
+			}
+			e, ok := LookupEvent(tc.constVal)
+			if !ok {
+				t.Fatalf("event %q not registered", tc.constVal)
+			}
+			if got, want := e.FullTopic("sentiae"), "sentiae.work.feature"; got != want {
+				t.Fatalf("wire topic = %q, want %q", got, want)
+			}
+			if got, want := e.Owner, "work-service"; got != want {
+				t.Fatalf("producer (Owner) = %q, want %q", got, want)
+			}
+			if got, want := e.Domain, "work"; got != want {
+				t.Fatalf("domain = %q, want %q", got, want)
+			}
+		})
+	}
+
+	// The component_linked event must carry the relationship enum in its schema.
+	linked, ok := LookupEvent(EventWorkFeatureComponentLinked)
+	if !ok {
+		t.Fatalf("event %q not registered", EventWorkFeatureComponentLinked)
+	}
+	for _, want := range []string{`"relationship"`, `"implements"`, `"depends_on"`, `"enum"`} {
+		if !strings.Contains(linked.Schema, want) {
+			t.Fatalf("component_linked schema missing %s; schema=%s", want, linked.Schema)
+		}
 	}
 }
 

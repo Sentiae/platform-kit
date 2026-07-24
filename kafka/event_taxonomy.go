@@ -44,6 +44,13 @@ const (
 	EventWorkFeatureStatusChanged = "work.feature.status_changed"
 	EventWorkFeatureEventCreated  = "work.feature.event_created"
 
+	// CP4.5 membership projection (D-182/D3): work-service emits these so
+	// catalog can project Feature→Product ownership and Feature↔Component
+	// links. Own the wire topic sentiae.work.feature, keyed by feature id.
+	EventWorkFeatureProductAssigned   = "work.feature.product_assigned"
+	EventWorkFeatureComponentLinked   = "work.feature.component_linked"
+	EventWorkFeatureComponentUnlinked = "work.feature.component_unlinked"
+
 	EventWorkSignalIngested   = "work.signal.ingested"
 	EventWorkSignalResolved   = "work.signal.resolved"
 	EventWorkSignalClassified = "work.signal.classified"
@@ -1047,6 +1054,15 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("work.feature.status_changed", []string{"status"}, `"name":{"type":"string"},"status":{"type":"string"},"health_status":{"type":"string"}`)},
 	{EventWorkFeatureEventCreated, "work", "A feature timeline event was recorded", "work-service",
 		dataSchema("work.feature.event_created", []string{"feature_id", "kind"}, `"feature_id":{"type":"string"},"kind":{"type":"string"},"summary":{"type":"string"}`)},
+
+	// CP4.5 membership projection (D-182/D3). All three ride the wire topic
+	// sentiae.work.feature, keyed by feature id; consumed by catalog.
+	{EventWorkFeatureProductAssigned, "work", "A Feature's owning Product was set or changed (membership truth, D-182/D3)", "work-service",
+		dataSchema("work.feature.product_assigned", []string{"feature_id", "product_id"}, `"feature_id":{"type":"string"},"product_id":{"type":"string"}`)},
+	{EventWorkFeatureComponentLinked, "work", "A Feature↔Component link was created (relationship implements|depends_on)", "work-service",
+		dataSchema("work.feature.component_linked", []string{"feature_id", "component_id", "relationship"}, `"feature_id":{"type":"string"},"component_id":{"type":"string"},"relationship":{"type":"string","enum":["implements","depends_on"]},"created_by":{"type":"string"}`)},
+	{EventWorkFeatureComponentUnlinked, "work", "A Feature↔Component link was removed", "work-service",
+		dataSchema("work.feature.component_unlinked", []string{"feature_id", "component_id"}, `"feature_id":{"type":"string"},"component_id":{"type":"string"}`)},
 
 	{EventWorkSignalIngested, "work", "A product signal was ingested", "work-service",
 		dataSchema("work.signal.ingested", []string{"category", "status"}, `"provider_id":{"type":"string"},"category":{"type":"string"},"status":{"type":"string"},"summary":{"type":"string"},"metric_name":{"type":"string"}`)},
