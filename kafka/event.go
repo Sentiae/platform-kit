@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -117,7 +118,18 @@ func newCloudEvent(source, eventType string, data EventData, idempotencyKey stri
 
 // topicFromEventType derives a Kafka topic from an event type.
 // "identity.user.registered" with prefix "sentiae" → "sentiae.identity.user"
+//
+// Event constants that already carry the topic prefix (the legacy
+// "sentiae.git.*" and "sentiae.timetravel.*" families) are normalised first:
+// without this, "sentiae.git.commit.created" derives domain="sentiae",
+// resource="git" and lands on "sentiae.sentiae.git", which no consumer
+// subscribes to. Only a LEADING prefix segment is stripped — a prefix
+// occurring mid-type is real path data — and stripping a type that carries no
+// prefix is a no-op.
 func topicFromEventType(prefix, eventType string) string {
+	if prefix != "" {
+		eventType = strings.TrimPrefix(eventType, prefix+".")
+	}
 	domain, resource := splitEventParts(eventType)
 	if resource != "" {
 		return fmt.Sprintf("%s.%s.%s", prefix, domain, resource)

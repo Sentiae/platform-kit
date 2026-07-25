@@ -5,65 +5,29 @@ import (
 	"testing"
 )
 
-// knownLegacyDoublePrefix is the explicit allow-list of "sentiae.*" bare
-// event types that ship in the taxonomy as legacy aliases. They are
-// intentionally kept so existing consumers do not break; new constants must
-// NOT be added here. The list exists solely so the naming-convention test
-// fails loudly when anyone adds a *new* "sentiae.*" entry — at which point
-// the CI signal is to either (a) drop the prefix or (b) register the event
-// under the legacy "sentiae" domain AND add it to this list with a note.
-var knownLegacyDoublePrefix = map[string]bool{
-	"sentiae.git.repository.created":     true,
-	"sentiae.git.repository.imported":    true,
-	"sentiae.git.repository.forked":      true,
-	"sentiae.git.push":                   true,
-	"sentiae.git.commit.created":         true,
-	"sentiae.git.pr.created":             true,
-	"sentiae.git.pr.updated":             true,
-	"sentiae.git.pr.merged":              true,
-	"sentiae.git.pr.closed":              true,
-	"sentiae.git.pr.review_requested":    true,
-	"sentiae.git.pr.approved":            true,
-	"sentiae.git.pr.changes_requested":   true,
-	"sentiae.git.pr.review.submitted":    true,
-	"sentiae.git.branch.created":         true,
-	"sentiae.git.branch.deleted":         true,
-	"sentiae.git.branch.protected_changed": true,
-	"sentiae.git.session.created":        true,
-	"sentiae.git.session.code_ready":     true,
-	"sentiae.git.session.merged":         true,
-	"sentiae.git.session.closed":         true,
-	"sentiae.git.ai_review.completed":    true,
-	"sentiae.git.release.created":        true,
-	// timetravel snapshot fan-out: the type is defined by
-	// platform-kit/timetravel.EventType (predates the naming convention) and
-	// is emitted by every service wiring a KafkaRecorder; registered under the
-	// legacy "sentiae" domain like the git block above.
-	"sentiae.timetravel.entity.changed": true,
-}
-
 // knownDomainMismatch is the explicit allow-list of taxonomy entries whose
 // leading segment does not match their declared Domain. The import-analyze
 // saga family was registered under the "canvas" resource path (because
 // canvas-service coordinates it) but logically belongs to the "saga" domain.
 // New entries should not be added here without justification.
 var knownDomainMismatch = map[string]bool{
-	"canvas.saga.import_analyze_canvas.started":       true,
-	"canvas.saga.import_analyze_canvas.nodes_created": true,
+	"canvas.saga.import_analyze_canvas.started":        true,
+	"canvas.saga.import_analyze_canvas.nodes_created":  true,
 	"canvas.saga.import_analyze_canvas.edges_inferred": true,
 	"canvas.saga.import_analyze_canvas.layout_applied": true,
-	"canvas.saga.import_analyze_canvas.completed":     true,
-	"canvas.saga.import_analyze_canvas.failed":        true,
+	"canvas.saga.import_analyze_canvas.completed":      true,
+	"canvas.saga.import_analyze_canvas.failed":         true,
 }
 
 // TestEventNamingConvention enforces the Sentiae taxonomy rule:
 // every registered event type must be "<domain>.<resource>.<action>" or
 // "<domain>.<resource>.<sub>.<action>" in all-lowercase underscored segments.
 // The ValidateEventType regex covers the char class; this test additionally
-// asserts that on-the-wire topics under the standard "sentiae" prefix are
-// not already prefixed (to catch accidental "sentiae.canvas.node" event
-// constants that would yield "sentiae.sentiae.canvas" topics) beyond the
-// explicit legacy allow-list above.
+// asserts that NO registered event yields a double-prefixed on-the-wire topic
+// ("sentiae.sentiae.*"). Event constants that carry the prefix themselves are
+// normalised by topicFromEventType, so a doubled topic here means the
+// derivation regressed — no allow-list, no exceptions: a doubled topic is a
+// topic no consumer subscribes to, and the event silently disappears.
 //
 // Closes Sentiae MEDIUM C5: CI test for topic naming standardization.
 func TestEventNamingConvention(t *testing.T) {
@@ -74,11 +38,10 @@ func TestEventNamingConvention(t *testing.T) {
 				t.Fatalf("event %q violates naming convention: %v", e.Type, err)
 			}
 
-			// Full topic under "sentiae" prefix must not double-prefix
-			// except for the known legacy set.
+			// Full topic under "sentiae" prefix must never double-prefix.
 			topic := e.FullTopic("sentiae")
-			if strings.HasPrefix(topic, "sentiae.sentiae.") && !knownLegacyDoublePrefix[e.Type] {
-				t.Errorf("event %q yields double-prefixed topic %q — strip the hard-coded prefix from the constant, or add it to knownLegacyDoublePrefix with a note", e.Type, topic)
+			if strings.HasPrefix(topic, "sentiae.sentiae.") || topic == "sentiae.sentiae" {
+				t.Errorf("event %q yields double-prefixed topic %q — no consumer subscribes to a doubled topic, so the event would be silently lost", e.Type, topic)
 			}
 
 			// Domain must be the leading segment (with explicit exceptions).

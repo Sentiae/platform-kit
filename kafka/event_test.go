@@ -78,6 +78,65 @@ func TestTopicFromEventType(t *testing.T) {
 			eventType: "canvas.marketplace.publisher.connected",
 			want:      "sentiae.canvas.marketplace",
 		},
+		{
+			// Legacy constants carry the prefix; it must be stripped so the
+			// topic is not doubled ("sentiae.sentiae.git").
+			name:      "event type already carrying the prefix",
+			prefix:    "sentiae",
+			eventType: "sentiae.git.commit.created",
+			want:      "sentiae.git.commit",
+		},
+		{
+			name:      "prefixed three-part event type",
+			prefix:    "sentiae",
+			eventType: "sentiae.git.push",
+			want:      "sentiae.git.push",
+		},
+		{
+			name:      "prefixed under a custom prefix",
+			prefix:    "myapp",
+			eventType: "myapp.auth.session.created",
+			want:      "myapp.auth.session",
+		},
+		{
+			// A type carrying a DIFFERENT product's prefix is untouched.
+			name:      "leading segment is not the configured prefix",
+			prefix:    "myapp",
+			eventType: "sentiae.git.commit.created",
+			want:      "myapp.sentiae.git",
+		},
+		{
+			// Only a LEADING occurrence is stripped — mid-string is real data.
+			name:      "prefix appears mid-string",
+			prefix:    "sentiae",
+			eventType: "ops.sentiae.audit.recorded",
+			want:      "sentiae.ops.sentiae",
+		},
+		{
+			// Stripping an already-stripped type is a no-op.
+			name:      "idempotent on unprefixed type",
+			prefix:    "sentiae",
+			eventType: "git.commit.created",
+			want:      "sentiae.git.commit",
+		},
+		{
+			name:      "single-segment event type",
+			prefix:    "sentiae",
+			eventType: "heartbeat",
+			want:      "sentiae.heartbeat",
+		},
+		{
+			name:      "single-segment event type equal to the prefix",
+			prefix:    "sentiae",
+			eventType: "sentiae",
+			want:      "sentiae.sentiae",
+		},
+		{
+			name:      "empty prefix leaves the type untouched",
+			prefix:    "",
+			eventType: ".git.commit.created",
+			want:      "..git",
+		},
 	}
 
 	for _, tt := range tests {
@@ -85,6 +144,26 @@ func TestTopicFromEventType(t *testing.T) {
 			got := topicFromEventType(tt.prefix, tt.eventType)
 			if got != tt.want {
 				t.Errorf("topicFromEventType(%q, %q) = %q, want %q", tt.prefix, tt.eventType, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestTopicFromEventTypeIdempotent asserts that feeding a derived topic back
+// through the derivation yields the same topic — the prefix is never doubled,
+// however many times normalisation runs.
+func TestTopicFromEventTypeIdempotent(t *testing.T) {
+	for _, eventType := range []string{
+		"identity.user.registered",
+		"sentiae.git.commit.created",
+		"sentiae.git.push",
+		"sentiae.timetravel.entity.changed",
+	} {
+		t.Run(eventType, func(t *testing.T) {
+			once := topicFromEventType("sentiae", eventType)
+			twice := topicFromEventType("sentiae", once)
+			if once != twice {
+				t.Errorf("not idempotent: %q → %q → %q", eventType, once, twice)
 			}
 		})
 	}
