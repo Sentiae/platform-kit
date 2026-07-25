@@ -228,16 +228,51 @@ type HandedTokenEnvelopeResolver struct {
 // per-call on principal.Token. A DefaultConfig failure leaves base nil and
 // every Resolve fails closed. kvMount / transitMount default to "secret" /
 // "transit-tenants".
+//
+// ⚠ CA ROTATION: vault.DefaultConfig reads VAULT_CACERT / VAULT_CAPATH ONCE and
+// caches the resulting *x509.CertPool for the process lifetime. Because this
+// resolver is built once at DI and lives as long as the process, its trust
+// anchor is frozen at boot — when the issuing CA rotates under it, every
+// Resolve fails with "x509: certificate signed by unknown authority" until the
+// process restarts. Callers whose Vault CA rotates (e.g. a SPIRE-issued Vault
+// server SVID) MUST use NewHandedTokenEnvelopeResolverWithClient and hand in a
+// client whose transport verifies against a live source.
 func NewHandedTokenEnvelopeResolver(kvMount, transitMount string) *HandedTokenEnvelopeResolver {
+	// A nil/failed client is a valid state — Resolve fails closed. Never panic at
+	// construction (mirrors the runtime's degrade-not-crash secret wiring).
+	base, _ := vault.NewClient(vault.DefaultConfig())
+	return NewHandedTokenEnvelopeResolverWithClient(base, kvMount, transitMount)
+}
+
+// NewHandedTokenEnvelopeResolverWithClient builds the handed-token resolver over
+// a base Vault client the CALLER already owns — typically the service's primary
+// client, whose transport was wired to verify Vault's server cert against a LIVE
+// trust source (see config.NewVaultClient's spiffe.VaultServerTLS leg) rather
+// than a pool snapshotted at boot. Resolve clones base per call, and
+// vault.Client.Clone copies config.HttpClient by POINTER, so every clone shares
+// that same live transport: the CA can rotate under a long-lived resolver
+// without a restart.
+//
+// It takes a *vault.Client and not an X509 source deliberately — the source is
+// already baked into the client's transport, which keeps SPIRE (and the spiffe
+// package) entirely out of this resolver's knowledge and import graph.
+//
+// Handing in the service's primary client shares only its TRANSPORT, never its
+// capability: Clone leaves CloneToken false, so the clone carries no token and
+// Resolve sets the caller-handed token on it. The base client's own token is
+// never presented (TestHandedTokenResolverIgnoresBaseToken pins this) — the
+// fleet host stays a bearer, never a minter (D-089).
+//
+// A nil base is a valid state: every Resolve fails closed with
+// ErrVaultUnavailable rather than panicking. kvMount / transitMount default to
+// "secret" / "transit-tenants".
+func NewHandedTokenEnvelopeResolverWithClient(base *vault.Client, kvMount, transitMount string) *HandedTokenEnvelopeResolver {
 	if kvMount == "" {
 		kvMount = "secret"
 	}
 	if transitMount == "" {
 		transitMount = "transit-tenants"
 	}
-	// A nil/failed client is a valid state — Resolve fails closed. Never panic at
-	// construction (mirrors the runtime's degrade-not-crash secret wiring).
-	base, _ := vault.NewClient(vault.DefaultConfig())
 	return &HandedTokenEnvelopeResolver{
 		base:         base,
 		kvMount:      kvMount,
