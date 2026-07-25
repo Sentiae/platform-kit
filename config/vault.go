@@ -83,12 +83,124 @@ type VaultClient struct {
 	closeOnce   sync.Once
 }
 
+// caEnvVarsSupersededBySPIFFE are the VAULT_* variables whose ONLY effect in
+// hashicorp/vault/api is to build the client's server-verification root pool
+// (Config.ReadEnvironment → configureTLS → rootcerts.LoadCACerts, which sets
+// tls.Config.RootCAs and nothing else). Each of the three can fail: CACERT
+// reads a file, CAPATH walks a directory, CACERT_BYTES parses inline PEM — and
+// any failure becomes Config.Error, which NewClient turns into a hard error.
+//
+// Deliberately NOT listed:
+//
+//   - VAULT_CLIENT_CERT / VAULT_CLIENT_KEY — these are the CLIENT's mTLS
+//     identity, not a CA. They are not part of CA loading, an operator who sets
+//     them means them, and a missing key pair is a real misconfiguration that
+//     should fail loudly rather than be silently dropped.
+//   - VAULT_SKIP_VERIFY — never touched, and never SET by this package: setting
+//     it would disable certificate verification process-wide, the exact opposite
+//     of the intent here.
+//   - VAULT_TLS_SERVER_NAME and every other VAULT_* var — unrelated to CA
+//     loading and incapable of failing client construction.
+var caEnvVarsSupersededBySPIFFE = []string{
+	"VAULT_CACERT",
+	"VAULT_CACERT_BYTES",
+	"VAULT_CAPATH",
+}
+
+// shouldNeutralizeCAEnv reports whether a CA file/dir/bundle from the
+// environment is guaranteed to be superseded by SPIFFE server verification —
+// true only for svid mode over https, which is exactly the case where
+// NewVaultClient replaces the transport's whole *tls.Config with
+// spiffe.VaultServerTLS. For every other mode, and for a plain-http address, it
+// returns false and the environment is left byte-identical to before.
+func shouldNeutralizeCAEnv(mode VaultAuthMode, addr string) bool {
+	return mode == VaultAuthSVID && strings.HasPrefix(strings.ToLower(addr), "https://")
+}
+
+// neutralizeVaultCAEnv unsets the CA-source environment variables listed in
+// caEnvVarsSupersededBySPIFFE for the remainder of the process, returning a
+// func that restores exactly what it removed (used by tests; production discards
+// it). It is idempotent: a second call finds nothing to remove and returns a
+// no-op restore.
+//
+// WHY THIS EXISTS — the least obvious code in this package.
+//
+// You cannot escape the CA env by building a Config yourself. The vault SDK
+// reads it at TWO levels, and the second is unconditional:
+//
+//  1. vault.DefaultConfig() calls Config.ReadEnvironment(), which loads
+//     VAULT_CACERT/CAPATH/CACERT_BYTES and, on failure, sets Config.Error.
+//     NewVaultClient's spiffe.VaultServerTLS override happens AFTER that call,
+//     so it cannot undo the error that was already recorded.
+//  2. api.NewClient(c *Config) re-reads the environment REGARDLESS of the config
+//     handed to it (hashicorp/vault/api@v1.23.0 client.go): it begins
+//     `def := DefaultConfig()` and returns
+//     "error encountered setting up default configuration: ..." if def.Error is
+//     set — even though `def` is otherwise discarded when c != nil. So an
+//     unreadable VAULT_CACERT is a hard boot dependency for ANY vault.NewClient
+//     call in the process, and no amount of config-building or
+//     transport-overriding escapes it.
+//
+// In svid mode SPIFFE is the trust source: spiffe.VaultServerTLS(x509Src)
+// installs a fresh *tls.Config whose verification is driven by the live
+// Workload API bundle, and it replaces RootCAs entirely. A CA file is therefore
+// not merely redundant, it is actively HARMFUL — a stale or missing file breaks
+// client CONSTRUCTION before any TLS handshake is ever attempted. That is what
+// was observed in production: with the file moved away, the fleet host logged
+//
+//	build Vault client failed (vault: create client: error encountered setting up
+//	default configuration: Error loading CA File: open
+//	/etc/spire/trust-bundle.pem: no such file or directory)
+//	— resident secret_refs will fail closed
+//
+// and then "fleet reconcile: boot replica: resolve secrets: secret resolver
+// unavailable" — every data-VM died with no endpoint, while the SPIFFE
+// verification that was supposed to have replaced that file was working fine.
+// Clearing the env is what finally lets the fleet host retire its static
+// trust-bundle file and the 15-minute timer that kept the copy fresh (a copy
+// that needed a process restart after every daily SPIRE CA rotation anyway).
+//
+// PROCESS-GLOBAL SIDE EFFECT, stated plainly: os.Unsetenv mutates the whole
+// process, so any OTHER Vault client built later in this process — e.g.
+// secret.NewHandedTokenEnvelopeResolver, which calls
+// vault.NewClient(vault.DefaultConfig()) directly — also stops reading the CA
+// file. This is not an accident to be apologised for, it is correct: the
+// condition guarding it (svid + https) means SPIFFE is THIS PROCESS's trust
+// source for Vault, so no client in it should be pinning a file-based root pool.
+// The alternative — leaving the env in place — gives those clients a root pool
+// frozen at boot that breaks on the next CA rotation, which is the failure this
+// whole path exists to eliminate. Verification is not weakened for any of them:
+// with no CA env the SDK falls back to the system pool, and the clients that
+// matter get the SPIFFE transport handed to them explicitly.
+func neutralizeVaultCAEnv() (restore func()) {
+	saved := make(map[string]string, len(caEnvVarsSupersededBySPIFFE))
+	for _, name := range caEnvVarsSupersededBySPIFFE {
+		if v, ok := os.LookupEnv(name); ok {
+			saved[name] = v
+			_ = os.Unsetenv(name)
+		}
+	}
+	return func() {
+		for name, v := range saved {
+			_ = os.Setenv(name, v)
+		}
+	}
+}
+
 // NewVaultClient connects to Vault using the supplied configuration. It
 // authenticates immediately; callers can reuse the returned client for
 // subsequent GetSecret calls.
 func NewVaultClient(ctx context.Context, cfg VaultConfig) (*VaultClient, error) {
 	if cfg.Address == "" {
 		return nil, errors.New("vault: address is required")
+	}
+
+	// MUST run before vault.DefaultConfig(): in svid mode over https the CA-file
+	// env is both dead and load-bearing-for-failure. See neutralizeVaultCAEnv.
+	// The restore func is deliberately discarded — the neutralization is meant to
+	// last for the process lifetime, not for this call (see its doc comment).
+	if shouldNeutralizeCAEnv(cfg.AuthMode, cfg.Address) {
+		_ = neutralizeVaultCAEnv()
 	}
 
 	vcfg := vault.DefaultConfig()
@@ -114,7 +226,10 @@ func NewVaultClient(ctx context.Context, cfg VaultConfig) (*VaultClient, error) 
 		}
 		cfg.x509Src = x509Src
 		cfg.jwtSrc = jwtSrc
-		if strings.HasPrefix(strings.ToLower(cfg.Address), "https://") {
+		// Same predicate as the CA-env neutralization above, deliberately shared:
+		// the env is only cleared in exactly the cases where this override makes a
+		// CA file irrelevant, and the two must never drift apart.
+		if shouldNeutralizeCAEnv(cfg.AuthMode, cfg.Address) {
 			tr, ok := vcfg.HttpClient.Transport.(*http.Transport)
 			if !ok {
 				_ = x509Src.Close()
