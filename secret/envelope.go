@@ -210,8 +210,8 @@ func (r *ScopedEnvelopeVaultResolver) scopedClient(ctx context.Context, policyOr
 // descriptor. The fleet host is a bearer, never a minter: a stolen host
 // credential can no longer mint a child for any org.
 //
-// It clones a base Vault client (address + TLS from the standard VAULT_* env,
-// via vault.DefaultConfig), sets the handed token on the clone, and reuses the
+// It clones a base Vault client — used for its ADDRESS and TRANSPORT only, since
+// Clone carries no token — sets the handed token on the clone, and reuses the
 // exact scopedKV + unsealBlob legs ScopedEnvelopeVaultResolver runs after its
 // mint. authorizeRef (I28) stays as defense-in-depth: a bug that handed an
 // A-org token for a B-org ref is refused by authorizeRef, and even if that were
