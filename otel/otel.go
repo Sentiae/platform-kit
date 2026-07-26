@@ -29,8 +29,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"strings"
+	"time"
 
+	"github.com/sentiae/platform-kit/logger"
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	prometheusbridge "go.opentelemetry.io/contrib/bridges/prometheus"
 	"go.opentelemetry.io/otel"
@@ -66,6 +69,19 @@ type Config struct {
 	// SampleRatio is the head trace sample ratio in [0,1]. <=0 or >=1 samples
 	// every trace (the default for a young platform — full fidelity).
 	SampleRatio float64
+	// InstanceID (optional) is the resource service.instance.id — what
+	// distinguishes two processes of the SAME service so they don't collapse
+	// onto one series. It MUST be stable across a process restart (a fresh uuid
+	// per start makes every restart a new time series and breaks every rate),
+	// and distinct per machine/container. Empty => derived from the hostname.
+	//
+	// The fleet host passes its DURABLE host uuid here (APP_FLEET_HOST_ID), not
+	// a hostname, so its telemetry can be joined to placement records.
+	InstanceID string
+	// ErrorWindow (optional) throttles the Error-level report of OTLP export
+	// failures: first failure logs immediately, further identical failures are
+	// counted and re-reported at most once per window. <=0 => DefaultErrorWindow.
+	ErrorWindow time.Duration
 }
 
 // Shutdown flushes and stops every provider. Call it on graceful shutdown
@@ -143,10 +159,34 @@ func Init(ctx context.Context, cfg Config) (Shutdown, error) {
 	)
 	logglobal.SetLoggerProvider(lp)
 
+	// --- export-failure reporting ---
+	// Every provider above exports in the background, where a failure is
+	// reported ONLY through the global error handler. The SDK default is
+	// log.Print, which Go 1.21+ routes through slog at INFO, so a service that
+	// has stopped exporting is invisible to error-level alerting. Install a
+	// handler that reports at Error level, throttled (see errorThrottle).
+	throttle := newErrorThrottle(cfg.ErrorWindow, time.Now, loggerFn(ctx))
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(throttle.Handle))
+	sweepCtx, stopSweeper := context.WithCancel(context.WithoutCancel(ctx))
+	go throttle.runSweeper(sweepCtx)
+
 	return func(sctx context.Context) error {
+		stopSweeper()
 		// Reverse order; join errors so one failure doesn't hide another.
 		return errors.Join(lp.Shutdown(sctx), mp.Shutdown(sctx), tp.Shutdown(sctx))
 	}, nil
+}
+
+// loggerFn adapts the caller's context logger to the throttle's log sink. The
+// context is detached from cancellation so shutdown-time export failures are
+// still reported, and it keeps the ctx values (the service logger, trace ids)
+// that logger.FromContext and the context handler rely on.
+func loggerFn(ctx context.Context) func(slog.Level, string, ...any) {
+	l := logger.FromContext(ctx)
+	lctx := context.WithoutCancel(ctx)
+	return func(level slog.Level, msg string, args ...any) {
+		l.Log(lctx, level, msg, args...)
+	}
 }
 
 // SlogHandler returns an slog.Handler that emits every record as a
@@ -174,7 +214,31 @@ func newResource(ctx context.Context, cfg Config) (*resource.Resource, error) {
 		// Kept as a literal key (stable across semconv versions).
 		attrs = append(attrs, attribute.String("deployment.environment", cfg.Environment))
 	}
+	// service.instance.id + host.name: without them two processes of the same
+	// service (e.g. the bare fleet host and a container) land on the SAME series
+	// and are indistinguishable — telemetry that is delivered but unverifiable.
+	if id := instanceID(cfg); id != "" {
+		attrs = append(attrs, semconv.ServiceInstanceID(id))
+	}
+	if h, err := os.Hostname(); err == nil && h != "" {
+		attrs = append(attrs, semconv.HostName(h))
+	}
 	return resource.New(ctx, resource.WithAttributes(attrs...))
+}
+
+// instanceID resolves service.instance.id. Config wins (the fleet host supplies
+// its durable host uuid), otherwise the hostname — which is stable across a
+// process restart, unlike a per-start random uuid, and distinct per
+// machine/container. Never generated: an unstable instance id would silently
+// fork a new time series on every restart.
+func instanceID(cfg Config) string {
+	if id := strings.TrimSpace(cfg.InstanceID); id != "" {
+		return id
+	}
+	if h, err := os.Hostname(); err == nil {
+		return strings.TrimSpace(h)
+	}
+	return ""
 }
 
 func sampler(ratio float64) sdktrace.Sampler {
