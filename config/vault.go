@@ -617,6 +617,34 @@ func NewFromEnv(ctx context.Context) (*VaultClient, error) {
 	return NewVaultClient(ctx, cfg)
 }
 
+// NewFromEnvWithSVIDRole builds a client exactly like NewFromEnv but logs in
+// under the supplied Vault jwt-backend role instead of the process-wide
+// VAULT_SVID_ROLE. Every other setting still comes from the environment.
+//
+// It exists because one Vault role carries one capability (D-224): a process
+// that needs two capabilities must hold two tokens, one per client, with the
+// role chosen in code at the call site — policies are never unioned onto a
+// single role. The env role stays the process default; a second capability
+// opens its own short-lived client here and closes it when done.
+//
+// Only svid auth mode is accepted: the role name is meaningless in token,
+// approle and kubernetes modes, so accepting them would silently return a
+// client with capabilities the caller did not ask for.
+func NewFromEnvWithSVIDRole(ctx context.Context, role string) (*VaultClient, error) {
+	if role == "" {
+		return nil, errors.New("vault: svid role is required")
+	}
+	cfg, err := configFromEnv()
+	if err != nil {
+		return nil, err
+	}
+	if cfg.AuthMode != VaultAuthSVID {
+		return nil, fmt.Errorf("vault: svid role %q requires VAULT_AUTH_MODE=svid, got %q", role, cfg.AuthMode)
+	}
+	cfg.SVIDRole = role
+	return NewVaultClient(ctx, cfg)
+}
+
 // configFromEnv reads the VAULT_* environment variables into a VaultConfig
 // without connecting. It is the pure, side-effect-free half of NewFromEnv,
 // split out so the env-parsing + mode-selection logic is unit-testable without
