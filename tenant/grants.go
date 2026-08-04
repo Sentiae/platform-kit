@@ -16,8 +16,8 @@ type ServiceGrant struct {
 
 // ServiceGrants is the allow-set that scopes what peer-mTLS service SVIDs may
 // do, keyed by full SPIFFE ID (e.g. "spiffe://sentiae.io/svc/foundry"). It is
-// consulted by [Principal.CanActInOrg] (cross-org) and [interceptor.UnaryServiceAuthz]
-// (per-method) only when a peer SVID is present.
+// consulted by [Principal.CanActInOrg] (cross-org AND per-method) and by
+// [UnaryServiceAuthz] (per-method) only when a peer SVID is present.
 //
 // The zero value denies everything (fail-closed). The real grant list is wired
 // at process start via [SetServiceGrants].
@@ -56,7 +56,9 @@ func (g ServiceGrants) AllowsOrg(svid string, _ uuid.UUID) bool {
 // AllowsMethod reports whether the given peer SVID may call fullMethod. An
 // unknown SVID is denied. A known SVID with an empty Methods set has no
 // per-method restriction (any method allowed); otherwise the method must be a
-// member of its Methods set.
+// member of its Methods set — an empty fullMethod is therefore denied against a
+// restricted grant, which is the fail-closed answer for a caller with no
+// server-owned method (a background context).
 func (g ServiceGrants) AllowsMethod(svid, fullMethod string) bool {
 	if g.byID == nil || svid == "" {
 		return false

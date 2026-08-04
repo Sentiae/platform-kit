@@ -16,6 +16,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/sentiae/platform-kit/interceptor"
 	"github.com/sentiae/platform-kit/middleware"
+	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -25,6 +26,7 @@ type Principal struct {
 	ServiceAuthed bool               // a valid x-api-key was presented
 	Service       string             // x-service-name label (attribution only; empty if none)
 	ServiceSVID   string             // peer SPIFFE ID (e.g. spiffe://sentiae.io/svc/foo); empty without mTLS
+	Method        string             // server-owned gRPC full-method being served; empty off the gRPC path
 	Claims        *middleware.Claims // non-nil when a valid user JWT was presented
 }
 
@@ -46,6 +48,12 @@ func FromContext(ctx context.Context) (Principal, bool) {
 		return p, true
 	}
 	var p Principal
+	// The full-method being served, from the gRPC server's own context — a
+	// server-owned value no caller can forge (the source already trusted for
+	// shadow-mode attribution in org_shadow.go). Empty off the gRPC path.
+	if m, ok := grpc.Method(ctx); ok {
+		p.Method = m
+	}
 	if svc, ok := interceptor.GetServiceCaller(ctx); ok {
 		p.ServiceAuthed = true
 		p.Service = svc
@@ -113,7 +121,10 @@ func (p Principal) OrgIDs() []uuid.UUID {
 // Service (non-user) principals:
 //   - With a peer SVID, the decision is scoped by the configured ServiceGrants
 //     allow-set (default: deny). A cross-org grant lets the SVID act in any
-//     org; an ungranted SVID is denied.
+//     org; an ungranted SVID is denied. When the grant carries a non-empty
+//     Methods set, the served full-method must be an exact member — a principal
+//     with no method (a background context off the gRPC path) fails closed. An
+//     empty Methods set stays unrestricted.
 //   - Without a peer SVID (ServiceSVID == "") — a plaintext island mid-rollout
 //     — a legacy x-api-key service (ServiceAuthed) may act in any org UNTIL
 //     SVID-authz goes strict ([SetMeshSVIDAuthzStrict]), after which it fails
@@ -128,7 +139,13 @@ func (p Principal) CanActInOrg(org uuid.UUID) bool {
 			if !meshSVIDAuthzStrict {
 				return true
 			}
-			return defaultServiceGrants.AllowsOrg(p.ServiceSVID, org)
+			// Both halves of the grant are required: the cross-org right AND,
+			// when the grant names methods, the served full-method. AllowsMethod
+			// returns true for an unrestricted (empty Methods) grant and false
+			// for an empty p.Method against a restricted one, which is the
+			// fail-closed answer for a headless/background caller.
+			return defaultServiceGrants.AllowsOrg(p.ServiceSVID, org) &&
+				defaultServiceGrants.AllowsMethod(p.ServiceSVID, p.Method)
 		}
 		// No peer SVID (a plaintext island mid-rollout). Honor legacy api-key
 		// any-org ONLY until SVID-authz goes strict, then fail closed.

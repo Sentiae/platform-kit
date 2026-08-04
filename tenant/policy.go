@@ -34,11 +34,14 @@ var crossOrgMeshServices = []string{
 }
 
 // catalogReadMethods are the non-mutating (Get/List/Resolve/Validate) gRPC
-// full-methods across catalog-service. They are the only cross-org methods the
-// method-scoped catalog readers (see methodScopedCatalogReaders, D-072) may
-// call: readers get cross-org rights ONLY to read the shared system model, never
-// to mutate it. Mutating RPCs — including the state-changing Resolve*Violation
-// RPCs — are deliberately excluded.
+// full-methods across catalog-service. They are the shared BASE of every
+// method-scoped catalog reader's grant (see methodScopedCatalogReaders, D-072):
+// a reader gets cross-org rights over catalog's shared system model to READ it,
+// never to mutate it. Mutating RPCs — including the state-changing
+// Resolve*Violation RPCs — are deliberately excluded.
+//
+// This list is one approved capability atom: it is snapshot-tested as exactly 47
+// entries, so a change to it is a deliberate, reviewed act rather than drift.
 var catalogReadMethods = []string{
 	// ComponentBodyService
 	"/catalog.v1.ComponentBodyService/GetBody",
@@ -97,15 +100,56 @@ var catalogReadMethods = []string{
 	"/catalog.v1.OwnershipService/ResolveOwner",
 }
 
-// methodScopedCatalogReaders (D-072) are SVIDs that call catalog but are NOT in
-// the blanket cross-org TCB. Each is granted cross-org rights restricted to
-// catalogReadMethods only — they may act cross-org solely to READ catalog's
-// shared system model, never to mutate it and never to reach any other service.
+// withCatalogReads returns the catalog read base plus the caller's own audited
+// extras, without aliasing the shared base slice.
+func withCatalogReads(extra ...string) []string {
+	out := make([]string, 0, len(catalogReadMethods)+len(extra))
+	out = append(out, catalogReadMethods...)
+	return append(out, extra...)
+}
+
+// methodScopedCatalogReaders (D-072, narrowed by D-223) are SVIDs that call
+// catalog but are NOT in the blanket cross-org TCB. Each gets cross-org rights
+// restricted to an explicit method set: the catalog read base (never a catalog
+// mutation) plus the calls that SVID's code actually makes on other services.
+//
+// The grant sets are PER READER, not one shared slice. An earlier comment here
+// claimed these readers "never reach any other service"; that was false in code
+// — three of the four do, and the calls are now named below:
+//
+//   - codegen     → runtime-service (compile verification)
+//   - composition → catalog + work body snapshots
+//   - canvas      → runtime-service graph lifecycle
+//
+// Governing principle (D-223, GRANT-WHAT-YOU-CALL): a restricted identity's
+// method set is the audited list of RPCs its code invokes on live paths — grant
+// what the caller calls, never what the callee happens to check today, so that
+// hardening a callee never breaks an audited caller.
 var methodScopedCatalogReaders = map[string][]string{
-	"spiffe://sentiae.io/svc/work":        catalogReadMethods,
-	"spiffe://sentiae.io/svc/codegen":     catalogReadMethods,
-	"spiffe://sentiae.io/svc/composition": catalogReadMethods,
-	"spiffe://sentiae.io/svc/canvas":      catalogReadMethods,
+	// work reads catalog only.
+	"spiffe://sentiae.io/svc/work": withCatalogReads(),
+
+	// codegen verifies generated code by compiling it through runtime-service.
+	"spiffe://sentiae.io/svc/codegen": withCatalogReads(
+		"/runtime.v1.RuntimeService/Compile",
+	),
+
+	// composition writes component/work body snapshots back and reads work bodies.
+	"spiffe://sentiae.io/svc/composition": withCatalogReads(
+		"/catalog.v1.ComponentBodyService/UpsertBodySnapshot",
+		"/work.v1.WorkBodyService/GetBody",
+		"/work.v1.WorkBodyService/UpsertBodySnapshot",
+	),
+
+	// canvas drives the runtime graph lifecycle.
+	"spiffe://sentiae.io/svc/canvas": withCatalogReads(
+		"/runtime.v1.GraphService/CreateGraph",
+		"/runtime.v1.GraphService/DeployGraph",
+		"/runtime.v1.GraphService/ExecuteGraph",
+		"/runtime.v1.GraphService/GetGraphExecution",
+		"/runtime.v1.GraphService/CancelGraphExecution",
+		"/runtime.v1.GraphService/ListNodeExecutions",
+	),
 }
 
 // addMethodScopedCatalogReaders merges the D-072 method-scoped catalog-read
