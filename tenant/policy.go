@@ -168,6 +168,35 @@ func addMethodScopedCatalogReaders(m map[string]ServiceGrant) {
 	}
 }
 
+// verificationIdentityGrants (D-223 §1.3, D-226): the standing grant for the
+// session-scoped verification identity. The SPIRE entry for svc/verify exists
+// only for the duration of an I27 drive (create → verify → delete, per D-223
+// §1.4), so a standing grant with no standing identity authorizes nothing.
+// It lives in the embedded default — not in a birth-time env override —
+// because .245-class hosts receive env exactly once, at image birth: a grant
+// deliverable only at birth is unreachable forever after one miss, while a
+// grant resident in the binary rides every re-bake beside the RPCs it names.
+var verificationIdentityGrants = map[string][]string{
+	"spiffe://sentiae.io/svc/verify": {
+		"/runtime.v1.ResourceProvisioning/GetResourceStatus",
+	},
+}
+
+// addVerificationIdentityGrants merges the D-226 verification-identity grants
+// into m without overwriting an entry already present.
+func addVerificationIdentityGrants(m map[string]ServiceGrant) {
+	for svid, methods := range verificationIdentityGrants {
+		if _, exists := m[svid]; exists {
+			continue
+		}
+		set := make(map[string]struct{}, len(methods))
+		for _, meth := range methods {
+			set[meth] = struct{}{}
+		}
+		m[svid] = ServiceGrant{CrossOrg: true, Methods: set}
+	}
+}
+
 // meshGrantOverride is the JSON shape of one entry in APP_MESH_SERVICE_GRANTS.
 type meshGrantOverride struct {
 	CrossOrg bool     `json:"cross_org"`
@@ -183,6 +212,7 @@ func DefaultMeshPolicy() ServiceGrants {
 		m[svid] = ServiceGrant{CrossOrg: true}
 	}
 	addMethodScopedCatalogReaders(m)
+	addVerificationIdentityGrants(m)
 	return NewServiceGrants(m)
 }
 
@@ -201,6 +231,7 @@ func LoadMeshPolicy() ServiceGrants {
 	// D-072 method-scoped catalog readers are merged BEFORE the env override so
 	// an APP_MESH_SERVICE_GRANTS entry can still adjust any of them.
 	addMethodScopedCatalogReaders(m)
+	addVerificationIdentityGrants(m)
 
 	raw := config.MeshServiceGrantsJSON()
 	if raw == "" {

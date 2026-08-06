@@ -153,6 +153,47 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 	}
 }
 
+// TestVerificationIdentityGrantPinned pins the D-226 verification-identity grant
+// at exactly one read method. The grant is resident in the embedded default (not
+// a birth-time env override) because .245-class hosts receive env exactly once,
+// at image birth; this test is what keeps that resident record from widening.
+func TestVerificationIdentityGrantPinned(t *testing.T) {
+	const svid = "spiffe://sentiae.io/svc/verify"
+	const granted = "/runtime.v1.ResourceProvisioning/GetResourceStatus"
+	for name, grants := range map[string]ServiceGrants{
+		"default": DefaultMeshPolicy(),
+		"loaded":  LoadMeshPolicy(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			gr, ok := grants.byID[svid]
+			if !ok {
+				t.Fatalf("%q has no grant", svid)
+			}
+			if !gr.CrossOrg {
+				t.Fatalf("%q must have CrossOrg", svid)
+			}
+			if len(gr.Methods) != 1 {
+				t.Fatalf("grant has %d methods, want exactly 1 (%v)", len(gr.Methods), sortedKeys(gr.Methods))
+			}
+			if _, ok := gr.Methods[granted]; !ok {
+				t.Fatalf("grant's single method is %v, want %q", sortedKeys(gr.Methods), granted)
+			}
+			if !grants.AllowsMethod(svid, granted) {
+				t.Fatalf("%q must allow %q", svid, granted)
+			}
+			for _, denied := range []string{
+				"/runtime.v1.ResourceProvisioning/ProvisionResource",
+				"/runtime.v1.ResourceProvisioning/DecommissionResource",
+				"",
+			} {
+				if grants.AllowsMethod(svid, denied) {
+					t.Fatalf("%q must NOT allow %q", svid, denied)
+				}
+			}
+		})
+	}
+}
+
 func sortedKeys(m map[string]struct{}) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
