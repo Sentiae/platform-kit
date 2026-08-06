@@ -160,9 +160,12 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 func TestVerificationIdentityGrantPinned(t *testing.T) {
 	const svid = "spiffe://sentiae.io/svc/verify"
 	const granted = "/runtime.v1.ResourceProvisioning/GetResourceStatus"
+	// LoadMeshPolicy merges APP_MESH_SERVICE_GRANTS over the embedded table, so an
+	// ambient value would decide this test instead of the code under test. Cleared
+	// exactly as TestMethodScopedCatalogReaders does above.
 	for name, grants := range map[string]ServiceGrants{
 		"default": DefaultMeshPolicy(),
-		"loaded":  LoadMeshPolicy(),
+		"loaded":  func() ServiceGrants { t.Setenv("APP_MESH_SERVICE_GRANTS", ""); return LoadMeshPolicy() }(),
 	} {
 		t.Run(name, func(t *testing.T) {
 			gr, ok := grants.byID[svid]
