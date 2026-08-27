@@ -179,6 +179,9 @@ func addMethodScopedCatalogReaders(m map[string]ServiceGrant) {
 var verificationIdentityGrants = map[string][]string{
 	"spiffe://sentiae.io/svc/verify": {
 		"/runtime.v1.ResourceProvisioning/GetResourceStatus",
+		"/node.v1.NodeService/RegisterNodeRepository",
+		"/git.v1.GitService/CreateRepository",
+		"/git.v1.FileService/GetArchive",
 	},
 }
 
@@ -186,6 +189,37 @@ var verificationIdentityGrants = map[string][]string{
 // into m without overwriting an entry already present.
 func addVerificationIdentityGrants(m map[string]ServiceGrant) {
 	for svid, methods := range verificationIdentityGrants {
+		if _, exists := m[svid]; exists {
+			continue
+		}
+		set := make(map[string]struct{}, len(methods))
+		for _, meth := range methods {
+			set[meth] = struct{}{}
+		}
+		m[svid] = ServiceGrant{CrossOrg: true, Methods: set}
+	}
+}
+
+// nodeRegistryGrants (node-as-repository Phase 1, D-384): node-service registers
+// node repositories and ingests version tags through git-service. GRANT-WHAT-YOU-
+// CALL (D-223): exactly the RPCs node-service's git gateway invokes.
+var nodeRegistryGrants = map[string][]string{
+	"spiffe://sentiae.io/svc/node": {
+		"/git.v1.GitService/GetRepositoryByOwnerAndName",
+		"/git.v1.GitService/CreateRepository",
+		"/git.v1.GitService/CreateTag",
+		"/git.v1.GitService/GetTag",
+		"/git.v1.FileService/CommitFiles",
+		"/git.v1.FileService/ReadFile",
+		"/git.v1.FileService/ListFiles",
+		"/git.v1.FileService/GetArchive",
+	},
+}
+
+// addNodeRegistryGrants merges the node-registry grants into m without
+// overwriting an entry already present.
+func addNodeRegistryGrants(m map[string]ServiceGrant) {
+	for svid, methods := range nodeRegistryGrants {
 		if _, exists := m[svid]; exists {
 			continue
 		}
@@ -213,6 +247,7 @@ func DefaultMeshPolicy() ServiceGrants {
 	}
 	addMethodScopedCatalogReaders(m)
 	addVerificationIdentityGrants(m)
+	addNodeRegistryGrants(m)
 	return NewServiceGrants(m)
 }
 
@@ -232,6 +267,7 @@ func LoadMeshPolicy() ServiceGrants {
 	// an APP_MESH_SERVICE_GRANTS entry can still adjust any of them.
 	addMethodScopedCatalogReaders(m)
 	addVerificationIdentityGrants(m)
+	addNodeRegistryGrants(m)
 
 	raw := config.MeshServiceGrantsJSON()
 	if raw == "" {

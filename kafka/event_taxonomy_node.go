@@ -1,0 +1,87 @@
+package kafka
+
+// Node-registry domain events (DESIGN node-as-repository §2/§4.1, Phase 1).
+// Sibling file so the headline registry keeps its foreign in-flight hunks
+// untouched; same init() merge as event_taxonomy_conversation.go (init order
+// = filename order).
+
+const (
+	EventNodeVersionIngested     = "node.version.ingested"
+	EventNodeVersionRejected     = "node.version.rejected"
+	EventNodeVersionPublished    = "node.version.published"
+	EventDeliveryNodeBundleBuilt = "delivery.node_bundle.built"
+)
+
+func init() {
+	extras := []RegisteredEvent{
+		{
+			Type:        EventNodeVersionIngested,
+			Domain:      "node",
+			Description: "A node version tag was ingested: manifest valid, source archived; a bundle build is requested.",
+			Owner:       "node-service",
+			Schema: dataSchema(
+				"node.version.ingested",
+				[]string{"qualified_name", "semver", "repo_ref", "commit_sha", "tag_sha", "source_digest", "implementations"},
+				`"qualified_name":{"type":"string","minLength":1},`+
+					`"semver":{"type":"string","pattern":"^[0-9]+\\.[0-9]+\\.[0-9]+$"},`+
+					`"repo_ref":{"type":"string","minLength":1},`+
+					`"commit_sha":{"type":"string","pattern":"^[0-9a-f]{40}$"},`+
+					`"tag_sha":{"type":"string","pattern":"^[0-9a-f]{40}$"},`+
+					`"source_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},`+
+					`"implementations":{"type":"array","items":{"type":"string"}},`+
+					`"tier":{"type":"string"}`,
+			),
+		},
+		{
+			Type:        EventNodeVersionRejected,
+			Domain:      "node",
+			Description: "A node version was refused (immutability conflict, invalid manifest, or a failed build).",
+			Owner:       "node-service",
+			Schema: dataSchema(
+				"node.version.rejected",
+				[]string{"qualified_name", "semver", "repo_ref", "reason"},
+				`"qualified_name":{"type":"string","minLength":1},`+
+					`"semver":{"type":"string"},`+
+					`"repo_ref":{"type":"string","minLength":1},`+
+					`"reason":{"type":"string","enum":["version_conflict","manifest_missing","manifest_invalid","manifest_name_mismatch","archive_too_large","build_failed"]},`+
+					`"detail":{"type":"string"},`+
+					`"commit_sha":{"type":"string"},`+
+					`"tag_sha":{"type":"string"}`,
+			),
+		},
+		{
+			Type:        EventNodeVersionPublished,
+			Domain:      "node",
+			Description: "Every declared implementation of a node version has a bundle; the version is placeable.",
+			Owner:       "node-service",
+			Schema: dataSchema(
+				"node.version.published",
+				[]string{"qualified_name", "semver", "commit_sha", "source_digest", "bundles"},
+				`"qualified_name":{"type":"string","minLength":1},`+
+					`"semver":{"type":"string"},`+
+					`"commit_sha":{"type":"string"},`+
+					`"source_digest":{"type":"string"},`+
+					`"bundles":{"type":"array","items":{"type":"object","properties":{"language":{"type":"string"},"image_ref":{"type":"string"},"digest":{"type":"string"}},"required":["language","image_ref","digest"]}}`,
+			),
+		},
+		{
+			Type:        EventDeliveryNodeBundleBuilt,
+			Domain:      "delivery",
+			Description: "delivery built one implementation bundle of a node version (Phase 2 producer; registered now so Phase 2 needs no taxonomy change).",
+			Owner:       "delivery-service",
+			Schema: dataSchema(
+				"delivery.node_bundle.built",
+				[]string{"qualified_name", "semver", "language", "image_ref", "digest"},
+				`"qualified_name":{"type":"string","minLength":1},`+
+					`"semver":{"type":"string"},`+
+					`"language":{"type":"string","enum":["go","typescript"]},`+
+					`"image_ref":{"type":"string","minLength":1},`+
+					`"digest":{"type":"string","minLength":1},`+
+					`"source_digest":{"type":"string"}`,
+			),
+		},
+	}
+	for _, e := range extras {
+		registry[e.Type] = e
+	}
+}

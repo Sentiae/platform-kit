@@ -153,9 +153,11 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 	}
 }
 
-// TestVerificationIdentityGrantPinned pins the D-226 verification-identity grant
-// at exactly one read method. The grant is resident in the embedded default (not
-// a birth-time env override) because .245-class hosts receive env exactly once,
+// TestVerificationIdentityGrantPinned pins the size of the D-226
+// verification-identity grant: one runtime read method plus the three RPCs the
+// node-as-repository Phase 1 acceptance drive invokes with the ephemeral
+// svc/verify SVID. The grant is resident in the embedded default (not a
+// birth-time env override) because .245-class hosts receive env exactly once,
 // at image birth; this test is what keeps that resident record from widening.
 func TestVerificationIdentityGrantPinned(t *testing.T) {
 	const svid = "spiffe://sentiae.io/svc/verify"
@@ -175,11 +177,11 @@ func TestVerificationIdentityGrantPinned(t *testing.T) {
 			if !gr.CrossOrg {
 				t.Fatalf("%q must have CrossOrg", svid)
 			}
-			if len(gr.Methods) != 1 {
-				t.Fatalf("grant has %d methods, want exactly 1 (%v)", len(gr.Methods), sortedKeys(gr.Methods))
+			if len(gr.Methods) != 4 {
+				t.Fatalf("grant has %d methods, want exactly 4 (%v)", len(gr.Methods), sortedKeys(gr.Methods))
 			}
 			if _, ok := gr.Methods[granted]; !ok {
-				t.Fatalf("grant's single method is %v, want %q", sortedKeys(gr.Methods), granted)
+				t.Fatalf("grant's methods are %v, want %q among them", sortedKeys(gr.Methods), granted)
 			}
 			if !grants.AllowsMethod(svid, granted) {
 				t.Fatalf("%q must allow %q", svid, granted)
@@ -217,5 +219,90 @@ func TestMethodScopedReadersNotBlanket(t *testing.T) {
 		if _, ok := blanket[svid]; ok {
 			t.Fatalf("%q must NOT be in the blanket cross-org list", svid)
 		}
+	}
+}
+
+// TestNodeRegistryGrantPinned pins the node-as-repository Phase 1 mesh grant:
+// svc/node acts cross-org over exactly the eight git-service RPCs its git
+// gateway invokes (GRANT-WHAT-YOU-CALL, D-223) and nothing else. Control:
+// delete "/git.v1.FileService/GetArchive" from nodeRegistryGrants → red.
+func TestNodeRegistryGrantPinned(t *testing.T) {
+	const svid = "spiffe://sentiae.io/svc/node"
+	granted := []string{
+		"/git.v1.GitService/GetRepositoryByOwnerAndName",
+		"/git.v1.GitService/CreateRepository",
+		"/git.v1.GitService/CreateTag",
+		"/git.v1.GitService/GetTag",
+		"/git.v1.FileService/CommitFiles",
+		"/git.v1.FileService/ReadFile",
+		"/git.v1.FileService/ListFiles",
+		"/git.v1.FileService/GetArchive",
+	}
+
+	// LoadMeshPolicy merges APP_MESH_SERVICE_GRANTS over the embedded table, so an
+	// ambient value would decide this test instead of the code under test.
+	for name, grants := range map[string]ServiceGrants{
+		"default": DefaultMeshPolicy(),
+		"loaded":  func() ServiceGrants { t.Setenv("APP_MESH_SERVICE_GRANTS", ""); return LoadMeshPolicy() }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			gr, ok := grants.byID[svid]
+			if !ok {
+				t.Fatalf("%q has no grant", svid)
+			}
+			if !gr.CrossOrg {
+				t.Fatalf("%q must have CrossOrg", svid)
+			}
+			if len(gr.Methods) != len(granted) {
+				t.Fatalf("grant has %d methods, want exactly %d (%v)", len(gr.Methods), len(granted), sortedKeys(gr.Methods))
+			}
+			for _, m := range granted {
+				if !grants.AllowsMethod(svid, m) {
+					t.Errorf("%q must allow %q", svid, m)
+				}
+			}
+			if grants.AllowsMethod(svid, "/git.v1.GitService/DeleteRepository") {
+				t.Errorf("%q must NOT allow %q", svid, "/git.v1.GitService/DeleteRepository")
+			}
+		})
+	}
+}
+
+// TestVerificationIdentityGrantPinned_Phase1 pins the three RPCs the Phase 1
+// acceptance drive invokes with the ephemeral svc/verify SVID, and the denials
+// that are the premise of the drive's deny probes: svc/verify holds no
+// GetTag/CreateTag grant, and node-service's InstallNode is not granted.
+// Control: delete "/git.v1.FileService/GetArchive" from
+// verificationIdentityGrants → red.
+func TestVerificationIdentityGrantPinned_Phase1(t *testing.T) {
+	const svid = "spiffe://sentiae.io/svc/verify"
+	granted := []string{
+		"/runtime.v1.ResourceProvisioning/GetResourceStatus",
+		"/node.v1.NodeService/RegisterNodeRepository",
+		"/git.v1.GitService/CreateRepository",
+		"/git.v1.FileService/GetArchive",
+	}
+	denied := []string{
+		"/node.v1.NodeService/InstallNode",
+		"/git.v1.GitService/GetTag",
+		"/git.v1.GitService/CreateTag",
+	}
+
+	for name, grants := range map[string]ServiceGrants{
+		"default": DefaultMeshPolicy(),
+		"loaded":  func() ServiceGrants { t.Setenv("APP_MESH_SERVICE_GRANTS", ""); return LoadMeshPolicy() }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, m := range granted {
+				if !grants.AllowsMethod(svid, m) {
+					t.Errorf("%q must allow %q", svid, m)
+				}
+			}
+			for _, m := range denied {
+				if grants.AllowsMethod(svid, m) {
+					t.Errorf("%q must NOT allow %q", svid, m)
+				}
+			}
+		})
 	}
 }
