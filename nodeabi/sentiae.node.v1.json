@@ -1,0 +1,212 @@
+{
+  "$defs": {
+    "Call": {
+      "additionalProperties": false,
+      "properties": {
+        "abi": {
+          "const": "sentiae.node/v1",
+          "type": "string"
+        },
+        "config": {
+          "type": "object"
+        },
+        "egress": {
+          "additionalProperties": false,
+          "properties": {
+            "proxy": {
+              "type": "string"
+            },
+            "token": {
+              "minLength": 1,
+              "type": "string"
+            }
+          },
+          "required": [
+            "proxy",
+            "token"
+          ],
+          "type": "object"
+        },
+        "inputs": {
+          "type": "object"
+        },
+        "invocation": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "node": {
+              "type": "string"
+            },
+            "run_id": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "node",
+            "run_id"
+          ],
+          "type": "object"
+        },
+        "node": {
+          "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*@[0-9]+\\.[0-9]+\\.[0-9]+$",
+          "type": "string"
+        },
+        "secrets": {
+          "additionalProperties": {
+            "pattern": "^handle:.{17,}$",
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "required": [
+        "abi",
+        "config",
+        "inputs",
+        "invocation",
+        "node",
+        "secrets"
+      ],
+      "type": "object"
+    },
+    "Error": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "minLength": 1,
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        },
+        "retryable": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "code",
+        "message",
+        "retryable"
+      ],
+      "type": "object"
+    },
+    "LogEntry": {
+      "additionalProperties": false,
+      "properties": {
+        "fields": {
+          "type": "object"
+        },
+        "level": {
+          "enum": [
+            "debug",
+            "error",
+            "info",
+            "warn"
+          ],
+          "type": "string"
+        },
+        "message": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "level",
+        "message"
+      ],
+      "type": "object"
+    },
+    "Request": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {},
+        "headers": {
+          "type": "object"
+        },
+        "method": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "query": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "headers",
+        "method",
+        "path",
+        "query"
+      ],
+      "type": "object"
+    },
+    "Response": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {},
+        "headers": {
+          "type": "object"
+        },
+        "status": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "type": "object"
+    },
+    "Result": {
+      "additionalProperties": false,
+      "description": "outputs is present iff status is ok; error is present iff status is error; emitted is sorted and unique and equals the keys of outputs on ok",
+      "properties": {
+        "abi": {
+          "const": "sentiae.node/v1",
+          "type": "string"
+        },
+        "emitted": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array",
+          "uniqueItems": true
+        },
+        "error": {
+          "$ref": "#/$defs/Error"
+        },
+        "logs": {
+          "items": {
+            "$ref": "#/$defs/LogEntry"
+          },
+          "maxItems": 256,
+          "type": "array"
+        },
+        "outputs": {
+          "type": "object"
+        },
+        "status": {
+          "enum": [
+            "error",
+            "ok"
+          ],
+          "type": "string"
+        },
+        "truncated": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "abi",
+        "emitted",
+        "status"
+      ],
+      "type": "object"
+    }
+  },
+  "$id": "https://sentiae.com/schemas/node-abi/v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sentiae node ABI sentiae.node/v1"
+}

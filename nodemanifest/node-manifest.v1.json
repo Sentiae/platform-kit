@@ -1,0 +1,278 @@
+{
+  "$defs": {
+    "Implementation": {
+      "additionalProperties": false,
+      "properties": {
+        "entry": {
+          "type": "string"
+        },
+        "lockfiles": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "entry",
+        "lockfiles"
+      ],
+      "type": "object"
+    },
+    "Port": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "schema": {
+          "$ref": "#/$defs/TypeRef"
+        }
+      },
+      "required": [
+        "name",
+        "required",
+        "schema"
+      ],
+      "type": "object"
+    },
+    "Secret": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "type": "string"
+        },
+        "required": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "name",
+        "required"
+      ],
+      "type": "object"
+    },
+    "TypeRef": {
+      "additionalProperties": false,
+      "properties": {
+        "$ref": {
+          "pattern": "^#/\\$defs/[A-Z][A-Za-z0-9]{0,63}$",
+          "type": "string"
+        },
+        "additionalProperties": {
+          "type": "boolean"
+        },
+        "const": {},
+        "default": {},
+        "description": {
+          "type": "string"
+        },
+        "enum": {
+          "minItems": 1,
+          "type": "array"
+        },
+        "format": {
+          "enum": [
+            "date-time",
+            "uri",
+            "uuid"
+          ],
+          "type": "string"
+        },
+        "items": {
+          "$ref": "#/$defs/TypeRef"
+        },
+        "properties": {
+          "additionalProperties": {
+            "$ref": "#/$defs/TypeRef"
+          },
+          "type": "object"
+        },
+        "required": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "type": {
+          "enum": [
+            "array",
+            "boolean",
+            "integer",
+            "null",
+            "number",
+            "object",
+            "string"
+          ],
+          "type": "string"
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$id": "https://sentiae.com/schemas/node-manifest/v1.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "$defs": {
+      "additionalProperties": {
+        "$ref": "#/$defs/TypeRef"
+      },
+      "propertyNames": {
+        "pattern": "^[A-Z][A-Za-z0-9]{0,63}$"
+      },
+      "type": "object"
+    },
+    "$schema": {
+      "const": "https://sentiae.com/schemas/node-manifest/v1.json",
+      "type": "string"
+    },
+    "capabilities": {
+      "additionalProperties": false,
+      "properties": {
+        "egress": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "egress"
+      ],
+      "type": "object"
+    },
+    "category": {
+      "enum": [
+        "trigger",
+        "http",
+        "transform",
+        "branch",
+        "data",
+        "code",
+        "ai",
+        "output",
+        "vendor"
+      ],
+      "type": "string"
+    },
+    "config": {
+      "$ref": "#/$defs/TypeRef"
+    },
+    "display": {
+      "additionalProperties": false,
+      "properties": {
+        "description": {
+          "type": "string"
+        },
+        "icon": {
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "description",
+        "icon",
+        "name"
+      ],
+      "type": "object"
+    },
+    "implementations": {
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "go": {
+          "$ref": "#/$defs/Implementation"
+        },
+        "typescript": {
+          "$ref": "#/$defs/Implementation"
+        }
+      },
+      "type": "object"
+    },
+    "inputs": {
+      "items": {
+        "$ref": "#/$defs/Port"
+      },
+      "type": "array"
+    },
+    "name": {
+      "pattern": "^@[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$",
+      "type": "string"
+    },
+    "outputs": {
+      "items": {
+        "$ref": "#/$defs/Port"
+      },
+      "type": "array"
+    },
+    "resources": {
+      "additionalProperties": false,
+      "properties": {
+        "memoryMiB": {
+          "maximum": 8192,
+          "minimum": 16,
+          "type": "integer"
+        },
+        "timeoutMs": {
+          "maximum": 3600000,
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "memoryMiB",
+        "timeoutMs"
+      ],
+      "type": "object"
+    },
+    "role": {
+      "enum": [
+        null,
+        "respond",
+        "trigger"
+      ]
+    },
+    "secrets": {
+      "items": {
+        "$ref": "#/$defs/Secret"
+      },
+      "type": "array"
+    },
+    "shape": {
+      "enum": [
+        "inline",
+        "standalone_service"
+      ],
+      "type": "string"
+    }
+  },
+  "required": [
+    "$schema",
+    "capabilities",
+    "category",
+    "config",
+    "display",
+    "implementations",
+    "inputs",
+    "name",
+    "outputs",
+    "resources",
+    "role",
+    "secrets",
+    "shape"
+  ],
+  "title": "Sentiae node manifest v1",
+  "type": "object"
+}
