@@ -1,0 +1,52 @@
+[
+  {
+    "code": "fire_and_forget",
+    "line": 1,
+    "severity": "info"
+  },
+  {
+    "code": "free_input_undeclared",
+    "line": 14,
+    "severity": "warning"
+  },
+  {
+    "code": "free_input_undeclared",
+    "line": 15,
+    "severity": "warning"
+  },
+  {
+    "code": "free_input_undeclared",
+    "line": 16,
+    "severity": "warning"
+  },
+  {
+    "code": "free_input_undeclared",
+    "line": 17,
+    "severity": "warning"
+  },
+  {
+    "code": "free_input_undeclared",
+    "line": 18,
+    "severity": "warning"
+  },
+  {
+    "code": "free_input_undeclared",
+    "line": 19,
+    "severity": "warning"
+  },
+  {
+    "code": "free_input_undeclared",
+    "line": 20,
+    "severity": "warning"
+  },
+  {
+    "code": "free_input_undeclared",
+    "line": 21,
+    "severity": "warning"
+  },
+  {
+    "code": "free_input_undeclared",
+    "line": 22,
+    "severity": "warning"
+  }
+]

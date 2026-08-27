@@ -1,0 +1,830 @@
+{
+  "cases": [
+    {
+      "claim": "Equal canonical schemas are exact.",
+      "name": "equal_string",
+      "source": {
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "want": "exact"
+    },
+    {
+      "claim": "Two unconstrained schemas are exact before the target-unconstrained rule applies.",
+      "name": "both_unconstrained",
+      "source": {},
+      "target": {},
+      "want": "exact"
+    },
+    {
+      "claim": "Every constrained source is assignable to an unconstrained target.",
+      "name": "target_unconstrained",
+      "source": {
+        "type": "string"
+      },
+      "target": {},
+      "want": "assignable"
+    },
+    {
+      "claim": "An unconstrained source cannot satisfy a constrained target.",
+      "name": "source_unconstrained",
+      "source": {},
+      "target": {
+        "type": "string"
+      },
+      "want": "unknown"
+    },
+    {
+      "claim": "An unconstrained nested source position makes the recursive verdict unknown.",
+      "name": "array_items_unknown",
+      "source": {
+        "items": {},
+        "type": "array"
+      },
+      "target": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "want": "unknown"
+    },
+    {
+      "claim": "Integer is structurally assignable to number.",
+      "name": "integer_to_number",
+      "source": {
+        "type": "integer"
+      },
+      "target": {
+        "type": "number"
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "Number is not assignable to integer.",
+      "name": "number_to_integer",
+      "source": {
+        "type": "number"
+      },
+      "target": {
+        "type": "integer"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "Different primitive kinds are incompatible and are never silently coerced.",
+      "name": "boolean_to_string",
+      "source": {
+        "type": "boolean"
+      },
+      "target": {
+        "type": "string"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "A source enum whose values are a subset of the target enum is assignable.",
+      "name": "enum_subset",
+      "source": {
+        "enum": [
+          "a"
+        ],
+        "type": "string"
+      },
+      "target": {
+        "enum": [
+          "a",
+          "b"
+        ],
+        "type": "string"
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "A source enum containing a value outside the target enum is incompatible.",
+      "name": "enum_superset",
+      "source": {
+        "enum": [
+          "a",
+          "c"
+        ],
+        "type": "string"
+      },
+      "target": {
+        "enum": [
+          "a",
+          "b"
+        ],
+        "type": "string"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "A source const is assignable when its value belongs to the target enum.",
+      "name": "const_in_enum",
+      "source": {
+        "const": "a",
+        "type": "string"
+      },
+      "target": {
+        "enum": [
+          "a",
+          "b"
+        ],
+        "type": "string"
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "A source const outside the target enum is incompatible.",
+      "name": "const_not_in_enum",
+      "source": {
+        "const": "c",
+        "type": "string"
+      },
+      "target": {
+        "enum": [
+          "a",
+          "b"
+        ],
+        "type": "string"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "Equal format refinements remain assignable when the source is otherwise narrower.",
+      "name": "format_equal_narrower",
+      "source": {
+        "enum": [
+          "550e8400-e29b-41d4-a716-446655440000"
+        ],
+        "format": "uuid",
+        "type": "string"
+      },
+      "target": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "A formatted source is assignable when the target has no format refinement.",
+      "name": "format_to_none",
+      "source": {
+        "format": "uri",
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "An unformatted source is incompatible with a format-constrained target.",
+      "name": "none_to_format",
+      "source": {
+        "type": "string"
+      },
+      "target": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "Array item schemas are compared recursively.",
+      "name": "array_items_assignable",
+      "source": {
+        "items": {
+          "type": "integer"
+        },
+        "type": "array"
+      },
+      "target": {
+        "items": {
+          "type": "number"
+        },
+        "type": "array"
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "Scalar-to-array coercion is incompatible.",
+      "name": "scalar_to_array",
+      "source": {
+        "type": "string"
+      },
+      "target": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "Every target-required property is present in source-required and its schema is assignable.",
+      "name": "object_required_present",
+      "source": {
+        "properties": {
+          "a": {
+            "type": "integer"
+          },
+          "b": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a",
+          "b"
+        ],
+        "type": "object"
+      },
+      "target": {
+        "properties": {
+          "a": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "A target-required property absent from source-required is incompatible.",
+      "name": "object_optional_to_required",
+      "source": {
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "target": {
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "A source property listed by the target must itself be assignable.",
+      "name": "object_listed_property_incompatible",
+      "source": {
+        "properties": {
+          "a": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "target": {
+        "properties": {
+          "a": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "An unconstrained source property makes a constrained target property unknown.",
+      "name": "object_nested_unknown",
+      "source": {
+        "properties": {
+          "a": {}
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "target": {
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "want": "unknown"
+    },
+    {
+      "claim": "A closed target requires a closed source.",
+      "name": "object_closed_target_open_source",
+      "source": {
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "target": {
+        "additionalProperties": false,
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "A closed source whose properties are a subset of a closed target is assignable.",
+      "name": "object_closed_both_subset",
+      "source": {
+        "additionalProperties": false,
+        "properties": {
+          "a": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "target": {
+        "additionalProperties": false,
+        "properties": {
+          "a": {
+            "type": "number"
+          },
+          "b": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "A closed source with a property outside a closed target is incompatible.",
+      "name": "object_closed_both_extra_prop",
+      "source": {
+        "additionalProperties": false,
+        "properties": {
+          "a": {
+            "type": "string"
+          },
+          "extra": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a",
+          "extra"
+        ],
+        "type": "object"
+      },
+      "target": {
+        "additionalProperties": false,
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "A cyclic ref with the same identity stops after one unrolling while non-cyclic fields remain structural.",
+      "name": "ref_cycle_same_shape",
+      "source": {
+        "$ref": "#/$defs/Node"
+      },
+      "sourceDefs": {
+        "Node": {
+          "additionalProperties": false,
+          "properties": {
+            "next": {
+              "$ref": "#/$defs/Node"
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        }
+      },
+      "target": {
+        "$ref": "#/$defs/Node"
+      },
+      "targetDefs": {
+        "Node": {
+          "additionalProperties": false,
+          "properties": {
+            "next": {
+              "$ref": "#/$defs/Node"
+            },
+            "value": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        }
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "Cyclic refs with different names but identical structure are assignable; re-entering the same ref pair ends the unrolling.",
+      "name": "ref_cycle_different_names",
+      "source": {
+        "$ref": "#/$defs/Node"
+      },
+      "sourceDefs": {
+        "Node": {
+          "additionalProperties": false,
+          "properties": {
+            "next": {
+              "$ref": "#/$defs/Node"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        }
+      },
+      "target": {
+        "$ref": "#/$defs/Other"
+      },
+      "targetDefs": {
+        "Other": {
+          "additionalProperties": false,
+          "properties": {
+            "next": {
+              "$ref": "#/$defs/Other"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        }
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "A string source cannot feed a number target; there is no scalar coercion.",
+      "name": "string_to_number",
+      "source": {
+        "type": "string"
+      },
+      "target": {
+        "type": "number"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "A number source cannot feed a string target.",
+      "name": "number_to_string",
+      "source": {
+        "type": "number"
+      },
+      "target": {
+        "type": "string"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "Null is a distinct primitive; it cannot feed a string.",
+      "name": "null_to_string",
+      "source": {
+        "type": "null"
+      },
+      "target": {
+        "type": "string"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "Equal boolean schemas are exact.",
+      "name": "boolean_exact",
+      "source": {
+        "type": "boolean"
+      },
+      "target": {
+        "type": "boolean"
+      },
+      "want": "exact"
+    },
+    {
+      "claim": "An enum source is assignable to an unrestricted target of the same type.",
+      "name": "enum_to_plain",
+      "source": {
+        "enum": [
+          "a",
+          "b"
+        ],
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "An unrestricted source has no value set and cannot satisfy an enum target.",
+      "name": "plain_to_enum",
+      "source": {
+        "type": "string"
+      },
+      "target": {
+        "enum": [
+          "a",
+          "b"
+        ],
+        "type": "string"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "Equal format refinements on otherwise equal schemas are exact.",
+      "name": "format_equal",
+      "source": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "target": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "want": "exact"
+    },
+    {
+      "claim": "Different format refinements are incompatible.",
+      "name": "format_mismatch",
+      "source": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "target": {
+        "format": "uri",
+        "type": "string"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "Array item incompatibility propagates to the array.",
+      "name": "array_items_incompatible",
+      "source": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "items": {
+          "type": "integer"
+        },
+        "type": "array"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "Array-to-scalar coercion is incompatible.",
+      "name": "array_to_scalar",
+      "source": {
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "target": {
+        "type": "string"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "A target-required property absent from the source altogether is incompatible.",
+      "name": "object_required_missing",
+      "source": {
+        "properties": {
+          "b": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "b"
+        ],
+        "type": "object"
+      },
+      "target": {
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "A source property the open target does not list is ignored.",
+      "name": "object_extra_prop_open_target",
+      "source": {
+        "properties": {
+          "a": {
+            "type": "string"
+          },
+          "b": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "a",
+          "b"
+        ],
+        "type": "object"
+      },
+      "target": {
+        "properties": {
+          "a": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "a"
+        ],
+        "type": "object"
+      },
+      "want": "assignable"
+    },
+    {
+      "claim": "The same $ref resolved in the same manifest is exact without unrolling.",
+      "name": "ref_same_def_same_manifest",
+      "sameDefs": true,
+      "source": {
+        "$ref": "#/$defs/Greeting"
+      },
+      "sourceDefs": {
+        "Greeting": {
+          "additionalProperties": false,
+          "properties": {
+            "greeting": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "greeting"
+          ],
+          "type": "object"
+        }
+      },
+      "target": {
+        "$ref": "#/$defs/Greeting"
+      },
+      "want": "exact"
+    },
+    {
+      "claim": "Structurally identical defs from two different manifests are exact after resolution.",
+      "name": "ref_structural_equal",
+      "source": {
+        "$ref": "#/$defs/Greeting"
+      },
+      "sourceDefs": {
+        "Greeting": {
+          "additionalProperties": false,
+          "properties": {
+            "greeting": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "greeting"
+          ],
+          "type": "object"
+        }
+      },
+      "target": {
+        "$ref": "#/$defs/Greeting"
+      },
+      "targetDefs": {
+        "Greeting": {
+          "additionalProperties": false,
+          "properties": {
+            "greeting": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "greeting"
+          ],
+          "type": "object"
+        }
+      },
+      "want": "exact"
+    },
+    {
+      "claim": "A cyclic ref whose non-cyclic field is incompatible is incompatible after one unrolling.",
+      "name": "ref_cycle_incompatible",
+      "source": {
+        "$ref": "#/$defs/Node"
+      },
+      "sourceDefs": {
+        "Node": {
+          "additionalProperties": false,
+          "properties": {
+            "next": {
+              "$ref": "#/$defs/Node"
+            },
+            "value": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        }
+      },
+      "target": {
+        "$ref": "#/$defs/Node"
+      },
+      "targetDefs": {
+        "Node": {
+          "additionalProperties": false,
+          "properties": {
+            "next": {
+              "$ref": "#/$defs/Node"
+            },
+            "value": {
+              "type": "integer"
+            }
+          },
+          "required": [
+            "value"
+          ],
+          "type": "object"
+        }
+      },
+      "want": "incompatible"
+    },
+    {
+      "claim": "default and description are annotations and never affect assignability.",
+      "name": "annotations_ignored",
+      "source": {
+        "default": "x",
+        "description": "a",
+        "type": "string"
+      },
+      "target": {
+        "type": "string"
+      },
+      "want": "exact"
+    }
+  ]
+}

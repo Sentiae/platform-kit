@@ -1,0 +1,59 @@
+# File-head free comment.
+
+# Header-leading comment.
+flow "Comment anchors" v2 # Header trailing comment.
+
+# Leading secure-http use.
+use secure_http = @acme/secure-http@2.1.0 # Secure-http use trailing comment.
+
+# Free comment between use declarations.
+
+# Leading webhook use.
+use webhook_trigger = @sentiae/webhook-trigger@1.0.0 # Webhook use trailing comment.
+
+# Leading intake node.
+node intake: webhook_trigger { # Intake open trailing comment.
+	# Intake body-tail comment.
+} # Intake close trailing comment.
+
+# Free comment after intake.
+
+# Leading worker node.
+node worker: secure_http { # Worker open trailing comment.
+	# Leading message config.
+	message = <<<
+		First line.
+
+		Third line.
+	>>>
+	# Comment after the heredoc terminator; leading trivia for method.
+	method = "GET" # Method trailing comment.
+	# Leading URL config.
+	url = "https://api.example.net/comments" # URL trailing comment.
+	# Leading schema-input override.
+	port in payload label "Commented payload" # Schema-input trailing comment.
+	# Leading promoted port.
+	port in method = config.method # Promoted-port trailing comment.
+	# Leading free input.
+	port in tools: string[] label "Commented tools" # Free-input trailing comment.
+	# Worker body-tail comment.
+} # Worker close trailing comment.
+
+# Leading first wire.
+wire intake.body -> worker.payload # First-wire trailing comment.
+
+# Free comment between wire declarations.
+
+# Leading second wire.
+wire intake.method -> worker.method # Second-wire trailing comment.
+
+# Leading layout block.
+layout { # Layout open trailing comment.
+	# Leading intake layout line.
+	intake @ 40,80 # Intake-layout trailing comment.
+	# Leading worker layout line.
+	worker @ 360,80 w 300 # Worker-layout trailing comment.
+	# Layout body-tail comment.
+} # Layout close trailing comment.
+
+# File-tail free comment.

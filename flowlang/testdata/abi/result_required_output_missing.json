@@ -1,0 +1,21 @@
+{
+  "claim": "Pins the runtime verdict when a status ok RESULT omits a manifest-required output: the document is refused with required_output_missing naming the port.",
+  "declaredOutputs": [
+    {
+      "name": "result",
+      "required": true
+    }
+  ],
+  "document": {
+    "abi": "sentiae.node/v1",
+    "emitted": [],
+    "logs": [],
+    "outputs": {},
+    "status": "ok"
+  },
+  "expect": {
+    "code": "required_output_missing",
+    "valid": false
+  },
+  "kind": "result"
+}

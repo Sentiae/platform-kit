@@ -1,0 +1,27 @@
+{
+  "claim": "Pins a successful RESULT whose required output is present and whose emitted list names exactly the fired output.",
+  "declaredOutputs": [
+    {
+      "name": "result",
+      "required": true
+    }
+  ],
+  "document": {
+    "abi": "sentiae.node/v1",
+    "emitted": [
+      "result"
+    ],
+    "logs": [],
+    "outputs": {
+      "result": {
+        "body": "accepted",
+        "status": 202
+      }
+    },
+    "status": "ok"
+  },
+  "expect": {
+    "valid": true
+  },
+  "kind": "result"
+}

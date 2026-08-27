@@ -1,0 +1,23 @@
+{
+  "claim": "Pins a basic CALL envelope with invocation identity, typed input, config, and an empty secret-handle map.",
+  "document": {
+    "abi": "sentiae.node/v1",
+    "config": {},
+    "inputs": {
+      "value": {
+        "order_id": "ord-123"
+      }
+    },
+    "invocation": {
+      "id": "inv-branch-001",
+      "node": "choose",
+      "run_id": "run-001"
+    },
+    "node": "@sentiae/branch@1.0.0",
+    "secrets": {}
+  },
+  "expect": {
+    "valid": true
+  },
+  "kind": "call"
+}

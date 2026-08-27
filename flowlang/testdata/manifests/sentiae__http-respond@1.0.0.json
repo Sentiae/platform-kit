@@ -1,0 +1,63 @@
+{
+  "$schema": "https://sentiae.com/schemas/node-manifest/v1.json",
+  "capabilities": {
+    "egress": []
+  },
+  "category": "output",
+  "config": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object"
+  },
+  "display": {
+    "description": "Returns an HTTP response from a flow.",
+    "icon": "reply",
+    "name": "HTTP respond"
+  },
+  "implementations": {
+    "go": {
+      "entry": "go/node.go",
+      "lockfiles": [
+        "go/go.mod",
+        "go/go.sum"
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "name": "body",
+      "required": true,
+      "schema": {}
+    }
+  ],
+  "name": "@sentiae/http-respond",
+  "outputs": [
+    {
+      "name": "response",
+      "required": true,
+      "schema": {
+        "additionalProperties": false,
+        "properties": {
+          "body": {},
+          "headers": {
+            "type": "object"
+          },
+          "status": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "type": "object"
+      }
+    }
+  ],
+  "resources": {
+    "memoryMiB": 64,
+    "timeoutMs": 5000
+  },
+  "role": "respond",
+  "secrets": [],
+  "shape": "inline"
+}

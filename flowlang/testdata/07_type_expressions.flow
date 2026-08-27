@@ -1,0 +1,30 @@
+flow "Type expressions" v2
+
+use secure_http = @acme/secure-http@2.1.0
+use webhook_trigger = @sentiae/webhook-trigger@1.0.0
+
+node intake: webhook_trigger {
+}
+
+node worker: secure_http {
+	url = "https://api.example.net/types"
+	port in payload label "Typed payload"
+	port out result label "Typed result"
+	port in method = config.method
+	port in cached: secure_http.Result
+	port in count: integer
+	port in flags: boolean[]
+	port in raw: array
+	port in record: object
+	port in ratio: number
+	port in ready: boolean
+	port in text: string
+	port in "X-Trace": string
+}
+
+wire intake.body -> worker.payload
+
+layout {
+	intake @ -80,100
+	worker @ 400,100 w 340
+}

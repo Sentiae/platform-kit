@@ -1,0 +1,22 @@
+flow "Heredoc fallbacks" v2
+
+use secure_http = @acme/secure-http@2.1.0
+use webhook_trigger = @sentiae/webhook-trigger@1.0.0
+
+node intake: webhook_trigger {
+}
+
+node worker: secure_http {
+	contains_terminator = "alpha\n>>>\nomega"
+	ends_with_lf = "alpha\n"
+	headers = {"a": {"a": 1, "z": 2}, "z": [3, 2, 1]}
+	url = "https://api.example.net/fallbacks"
+	"x-api-key" = "fallback-key"
+}
+
+wire intake.body -> worker.payload
+
+layout {
+	intake @ 80,100
+	worker @ 400,100
+}

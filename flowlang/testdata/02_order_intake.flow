@@ -1,0 +1,42 @@
+# Canonical v2 composition.
+flow "Order intake" v2
+
+use http_respond = @sentiae/http-respond@1.0.0
+use secure_http = @acme/secure-http@2.1.0
+use webhook_trigger = @sentiae/webhook-trigger@1.0.0
+
+node intake: webhook_trigger {
+}
+
+node fetch_orders: secure_http "Fetch orders" disabled {
+	enabled = true
+	headers = {"Accept": "application/json", "X-Trace": "orders"}
+	message = <<<
+		Summarize each order in one sentence.
+		Be terse.
+	>>>
+	method = "GET"
+	nothing = null
+	retries = 3
+	tags = ["ops", "orders"]
+	url = "https://api.example.net/orders"
+	"x-api-key" = "public"
+	port in payload label "Order payload"
+	port out result label "Fetched order"
+	port in method = config.method
+	port in tools: string[] label "Tools"
+}
+
+node response: http_respond {
+	port in body label "Response payload"
+}
+
+wire fetch_orders.result -> response.body
+wire intake.body -> fetch_orders.payload
+wire intake.method -> fetch_orders.method
+
+layout {
+	intake @ 80,120
+	fetch_orders @ 400,120 w 320
+	response @ 760,120
+}

@@ -1,0 +1,72 @@
+{
+  "$schema": "https://sentiae.com/schemas/node-manifest/v1.json",
+  "capabilities": {
+    "egress": []
+  },
+  "category": "trigger",
+  "config": {
+    "additionalProperties": false,
+    "properties": {
+      "method": {
+        "default": "POST",
+        "enum": [
+          "GET",
+          "POST"
+        ],
+        "type": "string"
+      },
+      "path": {
+        "default": "/hooks/orders",
+        "type": "string"
+      }
+    },
+    "required": [
+      "method",
+      "path"
+    ],
+    "type": "object"
+  },
+  "display": {
+    "description": "Starts a flow from an HTTP request.",
+    "icon": "webhook",
+    "name": "Webhook trigger"
+  },
+  "implementations": {
+    "go": {
+      "entry": "go/node.go",
+      "lockfiles": [
+        "go/go.mod",
+        "go/go.sum"
+      ]
+    }
+  },
+  "inputs": [],
+  "name": "@sentiae/webhook-trigger",
+  "outputs": [
+    {
+      "name": "body",
+      "required": true,
+      "schema": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "method",
+      "required": true,
+      "schema": {
+        "enum": [
+          "GET",
+          "POST"
+        ],
+        "type": "string"
+      }
+    }
+  ],
+  "resources": {
+    "memoryMiB": 64,
+    "timeoutMs": 5000
+  },
+  "role": "trigger",
+  "secrets": [],
+  "shape": "inline"
+}

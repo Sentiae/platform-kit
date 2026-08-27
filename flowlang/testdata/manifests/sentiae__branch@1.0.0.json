@@ -1,0 +1,59 @@
+{
+  "$schema": "https://sentiae.com/schemas/node-manifest/v1.json",
+  "capabilities": {
+    "egress": []
+  },
+  "category": "branch",
+  "config": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object"
+  },
+  "display": {
+    "description": "Routes a value through one optional output.",
+    "icon": "git-branch",
+    "name": "Branch"
+  },
+  "implementations": {
+    "go": {
+      "entry": "go/node.go",
+      "lockfiles": [
+        "go/go.mod",
+        "go/go.sum"
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "name": "value",
+      "required": true,
+      "schema": {
+        "type": "object"
+      }
+    }
+  ],
+  "name": "@sentiae/branch",
+  "outputs": [
+    {
+      "name": "on_false",
+      "required": false,
+      "schema": {
+        "type": "object"
+      }
+    },
+    {
+      "name": "on_true",
+      "required": false,
+      "schema": {
+        "type": "object"
+      }
+    }
+  ],
+  "resources": {
+    "memoryMiB": 64,
+    "timeoutMs": 5000
+  },
+  "role": null,
+  "secrets": [],
+  "shape": "inline"
+}

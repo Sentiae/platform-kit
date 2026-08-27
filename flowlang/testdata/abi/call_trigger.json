@@ -1,0 +1,40 @@
+{
+  "claim": "Pins trigger delivery of the reserved request input while the manifest itself declares zero inputs.",
+  "document": {
+    "abi": "sentiae.node/v1",
+    "config": {
+      "method": "POST",
+      "path": "/hooks/orders"
+    },
+    "inputs": {
+      "request": {
+        "body": {
+          "order_id": "ord-123"
+        },
+        "headers": {
+          "content-type": [
+            "application/json"
+          ]
+        },
+        "method": "POST",
+        "path": "/hooks/orders",
+        "query": {
+          "dry_run": [
+            "false"
+          ]
+        }
+      }
+    },
+    "invocation": {
+      "id": "inv-trigger-001",
+      "node": "intake",
+      "run_id": "run-001"
+    },
+    "node": "@sentiae/webhook-trigger@1.0.0",
+    "secrets": {}
+  },
+  "expect": {
+    "valid": true
+  },
+  "kind": "call"
+}

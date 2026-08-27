@@ -1,0 +1,140 @@
+{
+  "$defs": {
+    "Result": {
+      "additionalProperties": false,
+      "properties": {
+        "body": {
+          "type": "string"
+        },
+        "status": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "body",
+        "status"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://sentiae.com/schemas/node-manifest/v1.json",
+  "capabilities": {
+    "egress": [
+      "*",
+      "*.example.com",
+      "api.example.net"
+    ]
+  },
+  "category": "http",
+  "config": {
+    "additionalProperties": false,
+    "properties": {
+      "contains_terminator": {
+        "type": "string"
+      },
+      "enabled": {
+        "default": false,
+        "type": "boolean"
+      },
+      "ends_with_lf": {
+        "type": "string"
+      },
+      "headers": {
+        "default": {},
+        "type": "object"
+      },
+      "message": {
+        "default": "hello",
+        "type": "string"
+      },
+      "method": {
+        "default": "POST",
+        "enum": [
+          "GET",
+          "POST"
+        ],
+        "type": "string"
+      },
+      "nothing": {
+        "type": "null"
+      },
+      "retries": {
+        "default": 0,
+        "type": "integer"
+      },
+      "tags": {
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "url": {
+        "format": "uri",
+        "type": "string"
+      },
+      "x-api-key": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "type": "object"
+  },
+  "display": {
+    "description": "Calls an allowlisted endpoint with brokered secrets.",
+    "icon": "shield",
+    "name": "Secure HTTP"
+  },
+  "implementations": {
+    "go": {
+      "entry": "go/node.go",
+      "lockfiles": [
+        "go/go.mod",
+        "go/go.sum"
+      ]
+    },
+    "typescript": {
+      "entry": "typescript/src/node.ts",
+      "lockfiles": [
+        "typescript/package-lock.json"
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "name": "payload",
+      "required": true,
+      "schema": {
+        "type": "object"
+      }
+    }
+  ],
+  "name": "@acme/secure-http",
+  "outputs": [
+    {
+      "name": "result",
+      "required": true,
+      "schema": {
+        "$ref": "#/$defs/Result"
+      }
+    }
+  ],
+  "resources": {
+    "memoryMiB": 128,
+    "timeoutMs": 30000
+  },
+  "role": null,
+  "secrets": [
+    {
+      "name": "api_token",
+      "required": true
+    },
+    {
+      "name": "trace_token",
+      "required": false
+    }
+  ],
+  "shape": "inline"
+}

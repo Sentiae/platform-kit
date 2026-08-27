@@ -1,0 +1,23 @@
+{
+  "claim": "Pins an author-returned error RESULT with no emitted outputs and explicit retryability.",
+  "declaredOutputs": [
+    {
+      "name": "result",
+      "required": true
+    }
+  ],
+  "document": {
+    "abi": "sentiae.node/v1",
+    "emitted": [],
+    "error": {
+      "code": "REMOTE_TIMEOUT",
+      "message": "upstream request timed out",
+      "retryable": true
+    },
+    "status": "error"
+  },
+  "expect": {
+    "valid": true
+  },
+  "kind": "result"
+}
