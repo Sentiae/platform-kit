@@ -36,6 +36,7 @@ import (
 
 	"github.com/sentiae/platform-kit/config"
 	"github.com/sentiae/platform-kit/interceptor"
+	"github.com/sentiae/platform-kit/logger"
 	"github.com/sentiae/platform-kit/spiffe"
 	"github.com/sentiae/platform-kit/tenant"
 	"github.com/soheilhy/cmux"
@@ -86,6 +87,10 @@ type Builder struct {
 	// drive the refusal path.
 	selfProbe func(ctx context.Context, addr net.Addr, src *workloadapi.X509Source) error
 
+	// cmuxReadTimeout is the read deadline cmux applies while classifying a new
+	// connection; tests shorten it.
+	cmuxReadTimeout time.Duration
+
 	// ready carries the single startup verdict: nil once the listener is
 	// serving and (under a mesh mode) has answered the self-probe, else the
 	// refusal error. Buffered so Serve never blocks on a caller that does not
@@ -118,10 +123,11 @@ type Builder struct {
 // error before opening the listener.
 func New(cfg Config, opts ...grpc.ServerOption) *Builder {
 	b := &Builder{
-		serviceName: cfg.ServiceName,
-		source:      cfg.Source,
-		selfProbe:   probeMTLSListener,
-		ready:       make(chan error, 1),
+		serviceName:     cfg.ServiceName,
+		source:          cfg.Source,
+		selfProbe:       probeMTLSListener,
+		cmuxReadTimeout: defaultCMuxReadTimeout,
+		ready:           make(chan error, 1),
 	}
 
 	mode := cfg.Mode
@@ -220,6 +226,14 @@ func (b *Builder) Server() *grpc.Server {
 // only the handshake against a listener that is already accepting.
 const selfProbeTimeout = 15 * time.Second
 
+// defaultCMuxReadTimeout bounds how long an accepted-but-unclassified peer
+// may hold a cmux classifier goroutine — and, through cmux's WaitGroup, the
+// return of m.Serve(). A mesh peer sends its ClientHello or HTTP/2 preface
+// immediately, so this only ever fires for a silent or hostile connection;
+// without it one such peer keeps the permissive listener's teardown open
+// forever after a refused boot.
+const defaultCMuxReadTimeout = 15 * time.Second
+
 // Ready reports the startup verdict exactly once: nil when the listener is
 // serving and, under a mesh mode, has answered a real mTLS round trip; else the
 // refusal error Serve returned. Callers gate anything that advertises the
@@ -272,6 +286,7 @@ func (b *Builder) Serve(lis net.Listener) error {
 		// permissive: cmux routes TLS handshakes to the mTLS server and
 		// everything else to the plaintext server.
 		m := cmux.New(lis)
+		m.SetReadTimeout(b.cmuxReadTimeout)
 		tlsL := m.Match(cmux.TLS())
 		plainL := m.Match(cmux.Any())
 
@@ -289,12 +304,11 @@ func (b *Builder) Serve(lis net.Listener) error {
 
 	if err := b.selfProbe(ctx, lis.Addr(), b.source); err != nil {
 		b.Stop()
-		// reason: under strict, Stop() has already closed lis (grpc closes every
-		// listener it serves) and this Close returns "use of closed network
-		// connection"; under permissive it closes the cmux root that Stop() does
-		// not own. Either way the listener is down, which is all the refusal needs.
+		// reason: Stop() closes lis directly under strict and through cmux's
+		// matched listeners under permissive. Repeat Close at the refusal boundary
+		// intentionally; the expected already-closed error adds no diagnosis.
 		_ = lis.Close()
-		slog.Default().Error("grpcserver: mTLS self-probe failed; refusing to serve",
+		logger.FromContext(ctx).Error("grpcserver: mTLS self-probe failed; refusing to serve",
 			"service", b.serviceName, "addr", lis.Addr().String(), "err", err)
 		refusal := fmt.Errorf("grpcserver: service %q refused to serve: mTLS self-probe of %s failed: %w",
 			b.serviceName, lis.Addr().String(), err)
@@ -302,7 +316,7 @@ func (b *Builder) Serve(lis net.Listener) error {
 		return refusal
 	}
 
-	slog.Default().Info("grpcserver: mTLS self-probe passed",
+	logger.FromContext(ctx).Info("grpcserver: mTLS self-probe passed",
 		"service", b.serviceName, "addr", lis.Addr().String(), "spiffe_id", svidIDString(b.source))
 	b.ready <- nil
 

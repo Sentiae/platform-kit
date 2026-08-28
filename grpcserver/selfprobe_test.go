@@ -353,3 +353,63 @@ func TestServe_RefusesWhenSelfProbeFails(t *testing.T) {
 		t.Fatal("an mTLS connection accepted before the refusal still answers after it; b.Stop() is not tearing accepted connections down")
 	}
 }
+
+func TestServe_Permissive_RefusalClosesUnclassifiedPeer(t *testing.T) {
+	ca := spiffetest.NewCA(t)
+	src := ca.NewSource(t, "vigil")
+
+	b := New(Config{Mode: config.MTLSModePermissive, Source: src, ServiceName: "vigil"})
+	b.cmuxReadTimeout = 2 * time.Second
+
+	// silent is a raw TCP peer that connects and sends nothing, so cmux's TLS
+	// matcher sits in Read waiting to classify it. Without a read deadline that
+	// classifier — and the connection — outlive the refusal forever.
+	var silent net.Conn
+	b.selfProbe = func(ctx context.Context, addr net.Addr, src *workloadapi.X509Source) error {
+		network, target := probeTarget(addr)
+		c, err := net.Dial(network, target)
+		if err != nil {
+			return err
+		}
+		silent = c
+		// A completed mTLS round trip AFTER the silent dial proves cmux's single
+		// accept loop has already taken the silent peer (same listener, FIFO).
+		if err := probeMTLSListener(ctx, addr, src); err != nil {
+			return fmt.Errorf("pre-refusal mTLS probe: %w", err)
+		}
+		return errors.New("forced")
+	}
+	t.Cleanup(func() {
+		if silent != nil {
+			_ = silent.Close()
+		}
+	})
+
+	lis := listen(t, "tcp", "127.0.0.1:0")
+	done := make(chan error, 1)
+	go func() { done <- b.Serve(lis) }()
+
+	select {
+	case err := <-done:
+		if err == nil || !strings.Contains(err.Error(), "forced") {
+			t.Fatalf("Serve = %v, want the forced refusal", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Serve blocked instead of refusing")
+	}
+	if silent == nil {
+		t.Fatal("test bug: no silent peer was established")
+	}
+
+	// cmux must close the unclassified peer within its read deadline once the
+	// root listener is gone: EOF or reset here, never a timeout.
+	_ = silent.SetReadDeadline(time.Now().Add(5 * time.Second))
+	_, err := silent.Read(make([]byte, 1))
+	if err == nil {
+		t.Fatal("silent peer read data from a refused listener")
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		t.Fatal("silent peer still open 5s after the refusal; the cmux classifier is unbounded (no read deadline)")
+	}
+}
