@@ -306,3 +306,59 @@ func TestVerificationIdentityGrantPinned_Phase1(t *testing.T) {
 		})
 	}
 }
+
+// TestRegistryGrant_ResolveOnly pins the node-as-repository Phase 2 (L-2) mesh
+// grant: svc/registry acts cross-org over exactly ONE identity RPC — the
+// org-slug resolution its OCI push authorization performs (GRANT-WHAT-YOU-CALL,
+// D-223) — and over nothing else, and it is never a member of the blanket
+// cross-org TCB. Control: delete the "spiffe://sentiae.io/svc/registry" entry
+// from registryGrants in policy.go → this test is red.
+func TestRegistryGrant_ResolveOnly(t *testing.T) {
+	const (
+		svid    = "spiffe://sentiae.io/svc/registry"
+		granted = "/identity.v1.OrganizationService/GetOrganizationBySlug"
+	)
+	denied := []string{
+		"/identity.v1.OrganizationService/GetOrganization",
+		"/identity.v1.OrganizationService/ListOrganizations",
+		"/identity.v1.OrganizationService/CreateOrganization",
+		"",
+	}
+
+	for _, blanket := range crossOrgMeshServices {
+		if blanket == svid {
+			t.Fatalf("%q must NOT be in the blanket cross-org list", svid)
+		}
+	}
+
+	// LoadMeshPolicy merges APP_MESH_SERVICE_GRANTS over the embedded table, so an
+	// ambient value would decide this test instead of the code under test.
+	for name, grants := range map[string]ServiceGrants{
+		"default": DefaultMeshPolicy(),
+		"loaded":  func() ServiceGrants { t.Setenv("APP_MESH_SERVICE_GRANTS", ""); return LoadMeshPolicy() }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			gr, ok := grants.byID[svid]
+			if !ok {
+				t.Fatalf("%q has no grant", svid)
+			}
+			if !gr.CrossOrg {
+				t.Fatalf("%q must have CrossOrg", svid)
+			}
+			if !grants.AllowsOrg(svid, orgA) {
+				t.Fatalf("%q must be allowed to act cross-org", svid)
+			}
+			if len(gr.Methods) != 1 {
+				t.Fatalf("grant has %d methods, want exactly 1 (%v)", len(gr.Methods), sortedKeys(gr.Methods))
+			}
+			if !grants.AllowsMethod(svid, granted) {
+				t.Fatalf("%q must allow %q", svid, granted)
+			}
+			for _, m := range denied {
+				if grants.AllowsMethod(svid, m) {
+					t.Errorf("%q must NOT allow %q", svid, m)
+				}
+			}
+		})
+	}
+}

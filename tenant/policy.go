@@ -231,6 +231,35 @@ func addNodeRegistryGrants(m map[string]ServiceGrant) {
 	}
 }
 
+// registryGrants (node-as-repository Phase 2, L-2): registry-service authorizes
+// an OCI push by resolving the image name's FIRST path segment to an
+// organization slug through identity-service. That hop carries the registry's
+// own SVID with no user claims, so under strict SVID authz identity's inbound
+// propagation check refuses it unless svc/registry holds a grant.
+// GRANT-WHAT-YOU-CALL (D-223): exactly the one resolution RPC the registry's
+// identity client invokes — never a mutation, and never blanket cross-org (a
+// blanket grant would let the registry act in any org on any identity RPC).
+var registryGrants = map[string][]string{
+	"spiffe://sentiae.io/svc/registry": {
+		"/identity.v1.OrganizationService/GetOrganizationBySlug",
+	},
+}
+
+// addRegistryGrants merges the registry resolution grant into m without
+// overwriting an entry already present.
+func addRegistryGrants(m map[string]ServiceGrant) {
+	for svid, methods := range registryGrants {
+		if _, exists := m[svid]; exists {
+			continue
+		}
+		set := make(map[string]struct{}, len(methods))
+		for _, meth := range methods {
+			set[meth] = struct{}{}
+		}
+		m[svid] = ServiceGrant{CrossOrg: true, Methods: set}
+	}
+}
+
 // meshGrantOverride is the JSON shape of one entry in APP_MESH_SERVICE_GRANTS.
 type meshGrantOverride struct {
 	CrossOrg bool     `json:"cross_org"`
@@ -248,6 +277,7 @@ func DefaultMeshPolicy() ServiceGrants {
 	addMethodScopedCatalogReaders(m)
 	addVerificationIdentityGrants(m)
 	addNodeRegistryGrants(m)
+	addRegistryGrants(m)
 	return NewServiceGrants(m)
 }
 
@@ -268,6 +298,7 @@ func LoadMeshPolicy() ServiceGrants {
 	addMethodScopedCatalogReaders(m)
 	addVerificationIdentityGrants(m)
 	addNodeRegistryGrants(m)
+	addRegistryGrants(m)
 
 	raw := config.MeshServiceGrantsJSON()
 	if raw == "" {

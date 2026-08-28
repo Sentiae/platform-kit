@@ -38,6 +38,19 @@ type ConsumerConfig struct {
 	DeadLetterFunc DeadLetterFunc // Called when a message exhausts retries (optional)
 	Logger         *slog.Logger
 
+	// AfterDeadLetter, when set, is called exactly once after a poison message
+	// has been DURABLY parked by the DEFAULT dead-letter writer — after its
+	// WriteMessages returned nil — and before the caller commits the offset.
+	//
+	// It is a NOTIFICATION seam, not an override. It never fires when the
+	// dead-letter write failed (the offset stays uncommitted and the message is
+	// redelivered, so a hook that had already fired would notify twice for one
+	// message), and it never fires when DeadLetterFunc replaced the default
+	// writer, because then no <topic>.dlq record exists to notify about. A
+	// panic inside it is recovered and logged: notifying must never withhold a
+	// commit the durable DLQ record already justifies. Optional.
+	AfterDeadLetter func(ctx context.Context, msg FailedMessage)
+
 	// MaxConsecutiveErrors is the number of consecutive FetchMessage failures
 	// before the reader is closed and recreated with exponential backoff.
 	// Default: 5.
@@ -627,6 +640,9 @@ func (c *KafkaConsumer) assignedPartitionCount(ctx context.Context) (int, error)
 // annotated with dlq-* provenance headers, and returns the write error. A
 // non-nil error means the message was NOT durably parked, so the caller must
 // not commit the offset (it will be redelivered and retried).
+//
+// On the default path only, once the write has succeeded, cfg.AfterDeadLetter
+// is notified (see notifyAfterDeadLetter) before the caller commits.
 func (c *KafkaConsumer) sendToDeadLetter(ctx context.Context, msg kafka.Message, eventType string, retryCount int, lastErr error) error {
 	if c.cfg.DeadLetterFunc != nil {
 		c.cfg.DeadLetterFunc(ctx, FailedMessage{
@@ -702,7 +718,43 @@ func (c *KafkaConsumer) sendToDeadLetter(ctx context.Context, msg kafka.Message,
 		"error", lastErr,
 	)
 	c.recordDeadLetter(msg.Topic)
+	c.notifyAfterDeadLetter(ctx, FailedMessage{
+		Topic:      msg.Topic,
+		Key:        msg.Key,
+		Value:      msg.Value,
+		Headers:    msg.Headers,
+		Offset:     msg.Offset,
+		Partition:  msg.Partition,
+		EventType:  eventType,
+		RetryCount: retryCount,
+		LastError:  lastErr,
+	})
 	return nil
+}
+
+// notifyAfterDeadLetter invokes cfg.AfterDeadLetter for a message the DEFAULT
+// writer has just parked durably. It is called from exactly one place — the
+// success tail of sendToDeadLetter — so the hook fires once per parked message
+// and never for a write that failed or for the DeadLetterFunc override.
+//
+// A panic in the hook is recovered and logged rather than propagated: the DLQ
+// record already exists, so the offset must still be committed. A hook that
+// blocks blocks the commit; implementations must not do slow work inline.
+func (c *KafkaConsumer) notifyAfterDeadLetter(ctx context.Context, fm FailedMessage) {
+	if c.cfg.AfterDeadLetter == nil {
+		return
+	}
+	defer func() {
+		if r := recover(); r != nil {
+			c.cfg.Logger.Error("AfterDeadLetter hook panicked",
+				"topic", fm.Topic,
+				"offset", fm.Offset,
+				"event_type", fm.EventType,
+				"panic", r,
+			)
+		}
+	}()
+	c.cfg.AfterDeadLetter(ctx, fm)
 }
 
 // deadLetterWriteWithRetry writes a poison message to its <topic>.dlq via the

@@ -84,6 +84,12 @@ func init() {
 					`"scan_id":{"type":"string"}`,
 			),
 		},
+		// "infrastructure" is NOT a pipeline stage like the seven that precede
+		// it: delivery emits it at DLQ time, when a bundle build failed on the
+		// ENVIRONMENT rather than on the author's source. node-service records
+		// it as a rejection notification WITHOUT failing the version, so the
+		// version stays reversible once the environment is repaired. It is kept
+		// last so the pipeline steps stay in pipeline order.
 		{
 			Type:        EventDeliveryNodeBundleFailed,
 			Domain:      "delivery",
@@ -95,7 +101,7 @@ func init() {
 				`"qualified_name":{"type":"string","minLength":1},`+
 					`"semver":{"type":"string"},`+
 					`"language":{"type":"string","enum":["go","typescript"]},`+
-					`"step":{"type":"string","enum":["resolve_org","fetch_source","unpack_source","manifest","build","conformance","scan"]},`+
+					`"step":{"type":"string","enum":["resolve_org","fetch_source","unpack_source","manifest","build","conformance","scan","infrastructure"]},`+
 					`"detail":{"type":"string","minLength":1},`+
 					`"source_digest":{"type":"string"},`+
 					`"commit_sha":{"type":"string"}`,

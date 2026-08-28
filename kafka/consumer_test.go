@@ -640,3 +640,151 @@ func TestDeadLetterFunc(t *testing.T) {
 		t.Errorf("Offset = %d, want 42", captured.Offset)
 	}
 }
+
+// TestAfterDeadLetter_FiresOnlyAfterDurableParking pins the P2 notification
+// seam: ConsumerConfig.AfterDeadLetter fires exactly ONCE per message, only
+// after the DEFAULT dead-letter writer has durably parked it, and never when
+// that write failed or when DeadLetterFunc replaced the default writer. The
+// fired FailedMessage carries the original value and the exhausted retry count.
+//
+// Controls:
+//   - move the notifyAfterDeadLetter call ABOVE deadLetterWriteWithRetry in
+//     sendToDeadLetter → the "dlq write failed" row fires the hook → red.
+//   - call notifyAfterDeadLetter twice in the success tail → the
+//     "durable parking" row sees 2 calls → red.
+func TestAfterDeadLetter_FiresOnlyAfterDurableParking(t *testing.T) {
+	const eventType = "type.afterdlq"
+	handlerErr := errors.New("handler always fails")
+
+	tests := []struct {
+		name           string
+		sinkErr        error
+		useOverride    bool
+		wantCommit     bool
+		wantSinkWrites int
+		wantHookCalls  int32
+	}{
+		{
+			name:           "durable parking notifies exactly once",
+			wantCommit:     true,
+			wantSinkWrites: 1,
+			wantHookCalls:  1,
+		},
+		{
+			name:           "dlq write failed: no notification, no commit",
+			sinkErr:        errors.New("broker unreachable"),
+			wantCommit:     false,
+			wantSinkWrites: 0,
+			wantHookCalls:  0,
+		},
+		{
+			name:           "DeadLetterFunc override: no notification",
+			useOverride:    true,
+			wantCommit:     true,
+			wantSinkWrites: 0,
+			wantHookCalls:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sink := &fakeDLQSink{err: tt.sinkErr}
+
+			var (
+				hookCalls int32
+				hookMu    sync.Mutex
+				fired     []FailedMessage
+			)
+
+			c := &KafkaConsumer{
+				cfg: ConsumerConfig{
+					Logger:                  noopLogger(),
+					GroupID:                 "test-group",
+					MaxRetries:              2,
+					DisableSchemaValidation: true,
+					AfterDeadLetter: func(_ context.Context, fm FailedMessage) {
+						atomic.AddInt32(&hookCalls, 1)
+						hookMu.Lock()
+						fired = append(fired, fm)
+						hookMu.Unlock()
+					},
+				},
+				handlers:  make(map[string]EventHandler),
+				health:    make(map[string]*topicHealth),
+				dlqWriter: sink,
+			}
+			if tt.useOverride {
+				c.cfg.DeadLetterFunc = func(_ context.Context, _ FailedMessage) {}
+			}
+			c.handlers[eventType] = func(_ context.Context, _ CloudEvent) error { return handlerErr }
+
+			msg := ceMsg(t, "topic1", eventType, 2, 5, `{}`)
+			commit := c.handleFetchedMessage(context.Background(), msg)
+
+			if commit != tt.wantCommit {
+				t.Errorf("commit = %v, want %v", commit, tt.wantCommit)
+			}
+			if got := len(sink.written()); got != tt.wantSinkWrites {
+				t.Errorf("sink writes = %d, want %d", got, tt.wantSinkWrites)
+			}
+			if got := atomic.LoadInt32(&hookCalls); got != tt.wantHookCalls {
+				t.Fatalf("AfterDeadLetter calls = %d, want %d", got, tt.wantHookCalls)
+			}
+			if tt.wantHookCalls == 0 {
+				return
+			}
+
+			hookMu.Lock()
+			fm := fired[0]
+			hookMu.Unlock()
+
+			if fm.Topic != "topic1" {
+				t.Errorf("FailedMessage.Topic = %q, want topic1", fm.Topic)
+			}
+			if fm.EventType != eventType {
+				t.Errorf("FailedMessage.EventType = %q, want %q", fm.EventType, eventType)
+			}
+			if fm.RetryCount != 2 {
+				t.Errorf("FailedMessage.RetryCount = %d, want 2 (MaxRetries)", fm.RetryCount)
+			}
+			if string(fm.Value) != string(msg.Value) {
+				t.Errorf("FailedMessage.Value = %q, want the original %q", fm.Value, msg.Value)
+			}
+			if !errors.Is(fm.LastError, handlerErr) {
+				t.Errorf("FailedMessage.LastError = %v, want the handler error", fm.LastError)
+			}
+		})
+	}
+}
+
+// TestAfterDeadLetter_PanicDoesNotBlockCommit proves a panicking notification
+// hook cannot withhold a commit the durable DLQ record already justifies.
+// Control: drop the recover() from notifyAfterDeadLetter → the panic escapes
+// handleFetchedMessage and this test is red.
+func TestAfterDeadLetter_PanicDoesNotBlockCommit(t *testing.T) {
+	const eventType = "type.afterdlq.panic"
+	sink := &fakeDLQSink{}
+
+	c := &KafkaConsumer{
+		cfg: ConsumerConfig{
+			Logger:                  noopLogger(),
+			GroupID:                 "test-group",
+			MaxRetries:              1,
+			DisableSchemaValidation: true,
+			AfterDeadLetter: func(_ context.Context, _ FailedMessage) {
+				panic("hook exploded")
+			},
+		},
+		handlers:  make(map[string]EventHandler),
+		health:    make(map[string]*topicHealth),
+		dlqWriter: sink,
+	}
+	c.handlers[eventType] = func(_ context.Context, _ CloudEvent) error { return errors.New("boom") }
+
+	if commit := c.handleFetchedMessage(context.Background(), ceMsg(t, "topic1", eventType, 2, 5, `{}`)); !commit {
+		t.Fatalf("commit = false, want true (the DLQ write succeeded)")
+	}
+	if got := len(sink.written()); got != 1 {
+		t.Fatalf("sink writes = %d, want 1", got)
+	}
+}

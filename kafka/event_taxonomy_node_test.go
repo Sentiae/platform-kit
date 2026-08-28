@@ -184,13 +184,26 @@ func TestNodeBundleFailed_Registered(t *testing.T) {
 // TestNodeBundleFailed_PayloadShape proves the failed schema enforces its five
 // required metadata keys and both closed enums: a fully-populated payload
 // validates (the positive anchor), one without "detail" does not, and a step or
-// a language outside the P2-SPEC §3.1 A enum does not. Control: drop "detail"
-// from the required list in event_taxonomy_node.go → the missing-detail case
-// validates and this test is red.
+// a language outside the P2-SPEC §3.1 A enum does not. It also pins the P2
+// round-2 addition: "infrastructure" is IN the step enum (the DLQ-time
+// environment failure that notifies the author without failing the version)
+// while "sign" is still out. Controls: drop "detail" from the required list in
+// event_taxonomy_node.go → the missing-detail case validates and this test is
+// red; drop "infrastructure" from the step enum → the infrastructure case is
+// refused and this test is red.
 func TestNodeBundleFailed_PayloadShape(t *testing.T) {
 	t.Run("full payload validates", func(t *testing.T) {
 		if err := ValidateRawPayload(EventDeliveryNodeBundleFailed, nodeBundleRawPayload(nodeBundleFailedMetadata())); err != nil {
 			t.Fatalf("full payload must validate: %v", err)
+		}
+	})
+
+	t.Run("step infrastructure validates", func(t *testing.T) {
+		meta := nodeBundleFailedMetadata()
+		meta["step"] = "infrastructure"
+		meta["detail"] = "unclassified: dial tcp 10.0.10.20:3999: connect: connection refused"
+		if err := ValidateRawPayload(EventDeliveryNodeBundleFailed, nodeBundleRawPayload(meta)); err != nil {
+			t.Fatalf(`step "infrastructure" must validate: %v`, err)
 		}
 	})
 
