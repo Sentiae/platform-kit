@@ -17,6 +17,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/spiffe/go-spiffe/v2/spiffeid"
@@ -26,18 +27,26 @@ import (
 )
 
 // sourceStartupTimeout bounds how long NewSource / NewJWTSource wait for the
-// first SVID before degrading. go-spiffe's constructors retry a missing or
+// first SVID before giving up. go-spiffe's constructors retry a missing or
 // unreachable Workload API socket indefinitely; without this bound a service
-// that opts into mTLS but lacks a reachable socket would HANG at startup
-// instead of honoring the degrade-to-insecure contract callers rely on.
+// that opts into mTLS but lacks a reachable socket would HANG at startup.
+//
+// The bound is enforced BY RETRY, not by a single attempt: probeWorkloadAPI
+// re-fetches until the bound elapses. That distinction is the whole point. On
+// 2026-08-06 vigil booted 4.5 minutes before the SPIRE agent; the one-shot
+// probe returned Unavailable in 0.5 ms, the "60s" window was never consumed,
+// and the service ran without a TLS half for three weeks. A reboot race must
+// resolve INSIDE one boot.
 //
 // It is generous (60s) on purpose: during a mass redeploy the SPIRE agent
 // attests many new containers back-to-back, and a too-tight window would let a
-// service give up and degrade to PLAINTEXT — which, in a strict mesh, breaks
-// every edge to it. Waiting a minute for an identity at boot is cheap; silently
-// dropping out of the mesh is not. A genuinely missing socket still degrades,
-// just after this bound.
-const sourceStartupTimeout = 60 * time.Second
+// service give up while its identity is still being minted. Waiting a minute
+// for an identity at boot is cheap; dropping out of the mesh is not. A
+// genuinely missing socket still errors, just after this bound — and callers
+// under any mesh mode turn that error into a boot refusal (D-189).
+//
+// It is a var, not a const, so tests can shorten it.
+var sourceStartupTimeout = 60 * time.Second
 
 // TrustDomain is the Sentiae SPIFFE trust domain in URI form.
 const TrustDomain = "spiffe://sentiae.io"
@@ -62,22 +71,46 @@ func ServiceID(service string) spiffeid.ID {
 
 // probeWorkloadAPI verifies the SPIFFE Workload API socket is reachable and
 // actually delivers an SVID, bounded by sourceStartupTimeout. It exists so the
-// source constructors below can degrade (return an error) instead of hanging:
-// go-spiffe's NewX509Source/NewJWTSource retry a missing socket forever, so a
-// service that opted into mTLS but lacks a reachable socket would otherwise
-// wedge at startup rather than fall back to insecure.
+// source constructors below can return an error instead of hanging: go-spiffe's
+// NewX509Source/NewJWTSource retry a missing socket forever, so a service that
+// opted into mTLS but lacks a reachable socket would otherwise wedge at startup.
+//
+// The fetch is RETRIED with exponential backoff until the bound elapses. A
+// missing socket fails FetchX509Context immediately (Unavailable), so a single
+// attempt would consume none of the budget and report the bound it never
+// waited — which is exactly how a boot that raced the SPIRE agent by four
+// minutes gave up in half a millisecond.
 func probeWorkloadAPI(ctx context.Context) error {
 	probeCtx, cancel := context.WithTimeout(ctx, sourceStartupTimeout)
 	defer cancel()
+	start := time.Now()
+
 	client, err := workloadapi.New(probeCtx)
 	if err != nil {
 		return fmt.Errorf("spiffe: workload API unreachable: %w", err)
 	}
 	defer client.Close()
-	if _, err := client.FetchX509Context(probeCtx); err != nil {
-		return fmt.Errorf("spiffe: no SVID from the workload API within %s (socket unreachable?): %w", sourceStartupTimeout, err)
+
+	const (
+		initialBackoff = 100 * time.Millisecond
+		maxBackoff     = 2 * time.Second
+	)
+
+	backoff := initialBackoff
+	for attempts := 1; ; attempts++ {
+		if _, err = client.FetchX509Context(probeCtx); err == nil {
+			return nil
+		}
+		select {
+		case <-probeCtx.Done():
+			return fmt.Errorf("spiffe: no SVID from the workload API within %s after %d attempts over %s (socket %q; last error: %w)",
+				sourceStartupTimeout, attempts, time.Since(start).Round(time.Millisecond), os.Getenv("SPIFFE_ENDPOINT_SOCKET"), err)
+		case <-time.After(backoff):
+		}
+		if backoff *= 2; backoff > maxBackoff {
+			backoff = maxBackoff
+		}
 	}
-	return nil
 }
 
 // NewSource creates an X509Source backed by the SPIFFE Workload API. It reads

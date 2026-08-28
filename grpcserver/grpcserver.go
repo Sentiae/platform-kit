@@ -8,24 +8,31 @@
 //     (via cmux), so peers may connect with or without an SVID on the same port.
 //   - strict     — one mTLS server only.
 //
-// FAIL-CLOSED (D-162a L2): a security posture is never selected by the ABSENCE
-// of a value. "permissive" is the DECLARED escape hatch — a service that opts
-// into permissive tolerates plaintext by design, so a SPIRE hiccup (nil Source)
-// degrades it to plaintext-only rather than wedging it. "strict" means strict:
-// a strict service with no SVID source REFUSES TO SERVE rather than silently
-// serving unencrypted traffic while claiming to require mutual TLS. New records
-// that misconfiguration as a build error and Serve returns it before opening
-// the listener, so nothing insecure is ever served.
+// FAIL-CLOSED (D-162a L2, D-189): a security posture is never selected by the
+// ABSENCE of a value. "permissive" tolerates plaintext PEERS on the same port;
+// it never means "serve no TLS". ANY mode other than "off" requires an SVID
+// source — a nil Source under permissive or strict is a build error, recorded
+// by New and returned by Serve before the listener is touched, so nothing
+// insecure is ever served. A mesh listener without an SVID is a plaintext
+// surface, whatever posture it declares.
 //
-// If identity-service or permission-service must stay up through a SPIRE
-// outage, the honest mechanism is to run them "permissive" — never to let
-// "strict" secretly mean plaintext.
+// And a declared posture is not evidence: Serve PROVES the mTLS transport
+// answers on the bound listener — one real mTLS round trip against the exact
+// SVID the source holds — before it hands control back (see selfprobe.go).
+// A failed probe stops every server, closes the listener, and returns the
+// error, so a boot that cannot serve mTLS is a loud refusal (non-zero exit,
+// restart) rather than a "healthy" plaintext port.
+//
+// If a service must stay up through a SPIRE outage there is no honest escape
+// hatch here: it runs "off" and declares itself outside the mesh.
 package grpcserver
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/sentiae/platform-kit/config"
 	"github.com/sentiae/platform-kit/interceptor"
@@ -45,9 +52,9 @@ type Config struct {
 	// Empty is treated as "off". See config.MTLSMode.
 	Mode string
 
-	// Source is the SPIFFE X509 source used for the mTLS server. When nil under
-	// "permissive" the builder degrades to plaintext-only; when nil under
-	// "strict" the builder refuses to serve (see package doc).
+	// Source is the SPIFFE X509 source used for the mTLS server. Nil under any
+	// mode other than "off" is a build error: the builder refuses to serve
+	// (see package doc).
 	Source *workloadapi.X509Source
 
 	// ServiceName is the short service name (e.g. "identity"), used only for
@@ -69,9 +76,26 @@ type Builder struct {
 	plain *grpc.Server
 	mtls  *grpc.Server
 
-	// buildErr, when non-nil, marks a fail-closed-invalid configuration (strict
-	// mTLS required but no SVID source). No server is built; Serve returns this
-	// error before opening the listener so nothing insecure is ever served.
+	// source is the SVID source the mTLS server presents. It is also what the
+	// boot-time self-probe dials with, and whose SVID ID the probe requires the
+	// listener to answer with. Nil only under mode "off".
+	source *workloadapi.X509Source
+
+	// selfProbe performs the boot-time mTLS round trip against the bound
+	// listener. It is probeMTLSListener in production; tests override it to
+	// drive the refusal path.
+	selfProbe func(ctx context.Context, addr net.Addr, src *workloadapi.X509Source) error
+
+	// ready carries the single startup verdict: nil once the listener is
+	// serving and (under a mesh mode) has answered the self-probe, else the
+	// refusal error. Buffered so Serve never blocks on a caller that does not
+	// read it.
+	ready chan error
+
+	// buildErr, when non-nil, marks a fail-closed-invalid configuration (a mesh
+	// mode with no SVID source, or an unrecognized mode). No server is built;
+	// Serve returns this error before opening the listener so nothing insecure
+	// is ever served.
 	buildErr error
 }
 
@@ -88,13 +112,17 @@ type Builder struct {
 // to honor an already-scoped active org. Propagation is installed on every
 // underlying server (both transports in permissive mode).
 //
-// New does not panic. Fail-closed (D-162a L2): "strict" with a nil Source is an
-// invalid configuration — New builds NO server and records a build error naming
-// the service and the problem; Serve returns that error before opening the
-// listener. "permissive" with a nil Source is the declared escape hatch and
-// degrades to plaintext-only (see package doc).
+// New does not panic. Fail-closed (D-162a L2, D-189): any mode other than "off"
+// with a nil Source is an invalid configuration — New builds NO server and
+// records a build error naming the service and the mode; Serve returns that
+// error before opening the listener.
 func New(cfg Config, opts ...grpc.ServerOption) *Builder {
-	b := &Builder{serviceName: cfg.ServiceName}
+	b := &Builder{
+		serviceName: cfg.ServiceName,
+		source:      cfg.Source,
+		selfProbe:   probeMTLSListener,
+		ready:       make(chan error, 1),
+	}
 
 	mode := cfg.Mode
 	if mode == "" {
@@ -113,21 +141,13 @@ func New(cfg Config, opts ...grpc.ServerOption) *Builder {
 		return b
 	}
 
-	// FAIL-CLOSED: strict mTLS required but no SVID source. Refuse to serve
-	// rather than silently serving plaintext under a "strict" posture.
-	if mode == config.MTLSModeStrict && cfg.Source == nil {
-		b.buildErr = fmt.Errorf("grpcserver: service %q configured for strict mTLS but no SPIFFE/SVID source is available; refusing to serve (run in permissive mode if plaintext is acceptable during a SPIRE outage)", cfg.ServiceName)
-		slog.Default().Error("grpcserver: strict mTLS required but SPIFFE source unavailable; refusing to serve",
+	// FAIL-CLOSED: a mesh mode with no SVID source. There is no degrade branch:
+	// permissive tolerates plaintext peers, never a listener with no TLS half.
+	if mode != config.MTLSModeOff && cfg.Source == nil {
+		b.buildErr = fmt.Errorf("grpcserver: service %q configured for %s mTLS but no SPIFFE/SVID source is available; refusing to serve (D-189: a mesh listener without an SVID is a plaintext surface)", cfg.ServiceName, mode)
+		slog.Default().Error("grpcserver: mesh mTLS required but SPIFFE source unavailable; refusing to serve",
 			"service", cfg.ServiceName, "mode", mode)
 		return b
-	}
-
-	// Degrade permissive with no source to plaintext-only (the declared escape
-	// hatch — a SPIRE hiccup must not wedge a service that opted into it).
-	if mode == config.MTLSModePermissive && cfg.Source == nil {
-		slog.Default().Warn("grpcserver: permissive mTLS requested but SPIFFE source unavailable; degrading to plaintext-only",
-			"service", cfg.ServiceName, "mode", mode)
-		mode = config.MTLSModeOff
 	}
 
 	// The SVID interceptors extract the peer's SPIFFE ID (if any) into ctx and
@@ -195,14 +215,37 @@ func (b *Builder) Server() *grpc.Server {
 	return b.servers[0]
 }
 
+// selfProbeTimeout bounds the boot-time mTLS round trip. The identity wait is
+// already bounded upstream by spiffe.sourceStartupTimeout; this budget covers
+// only the handshake against a listener that is already accepting.
+const selfProbeTimeout = 15 * time.Second
+
+// Ready reports the startup verdict exactly once: nil when the listener is
+// serving and, under a mesh mode, has answered a real mTLS round trip; else the
+// refusal error Serve returned. Callers gate anything that advertises the
+// service (an HTTP listener, a readiness probe) on this channel so a refused
+// mesh boot is never reported healthy.
+func (b *Builder) Ready() <-chan error {
+	return b.ready
+}
+
 // Serve registers reflection (and a default health service if the caller did
-// not already register one) on each underlying server, then serves. With one
-// server it serves directly; with two it multiplexes plaintext and TLS on the
-// single listener via cmux. Serve blocks until the listener is closed.
+// not already register one) on each underlying server, then serves: one server
+// directly, or plaintext and TLS multiplexed on the single listener via cmux.
+//
+// Under any mesh mode Serve then PROVES the transport before reporting ready —
+// it dials its own listener with a real mTLS client built from the same source
+// and completes one health check (see selfprobe.go). A failed probe stops every
+// server, closes the listener, and returns the error, so a listener that cannot
+// answer mTLS is a boot refusal rather than a silent plaintext surface (D-189).
+//
+// Serve blocks until the listener is closed.
 func (b *Builder) Serve(lis net.Listener) error {
-	// Fail-closed: a poisoned builder (strict mTLS with no SVID source) never
-	// serves. Return before touching the listener so nothing insecure is served.
+	// Fail-closed: a poisoned builder (a mesh mode with no SVID source, or an
+	// unrecognized mode) never serves. Return before touching the listener so
+	// nothing insecure is served.
 	if b.buildErr != nil {
+		b.ready <- b.buildErr
 		return b.buildErr
 	}
 
@@ -211,20 +254,59 @@ func (b *Builder) Serve(lis net.Listener) error {
 		reflection.Register(srv)
 	}
 
-	if len(b.servers) == 1 {
+	// Mode off: one plaintext server, no mesh posture claimed, nothing to prove.
+	if b.mtls == nil {
+		b.ready <- nil
 		return b.servers[0].Serve(lis)
 	}
 
-	// Two servers: cmux routes TLS handshakes to the mTLS server and everything
-	// else to the plaintext server.
-	m := cmux.New(lis)
-	tlsL := m.Match(cmux.TLS())
-	plainL := m.Match(cmux.Any())
+	serveErr := make(chan error, 1)
+	if b.plain == nil {
+		// strict: the mTLS server owns the listener outright.
+		//
+		// reason: no ctx and no recover on purpose — the accept loop is ended by
+		// the listener closing, not by a context, and a panic inside it must
+		// crash the boot (the restart is the recovery) rather than be logged past.
+		go func() { serveErr <- b.mtls.Serve(lis) }()
+	} else {
+		// permissive: cmux routes TLS handshakes to the mTLS server and
+		// everything else to the plaintext server.
+		m := cmux.New(lis)
+		tlsL := m.Match(cmux.TLS())
+		plainL := m.Match(cmux.Any())
 
-	go b.serve(b.mtls, tlsL, "mtls")
-	go b.serve(b.plain, plainL, "plain")
+		go b.serve(b.mtls, tlsL, "mtls")
+		go b.serve(b.plain, plainL, "plain")
 
-	return m.Serve()
+		// reason: no ctx and no recover, same reason as above.
+		go func() { serveErr <- m.Serve() }()
+	}
+
+	// reason: Serve has no inbound ctx — this is boot, not an inbound-triggered
+	// outbound call, the one case CLAUDE.md §27 leaves to a fresh context.
+	ctx, cancel := context.WithTimeout(context.Background(), selfProbeTimeout)
+	defer cancel()
+
+	if err := b.selfProbe(ctx, lis.Addr(), b.source); err != nil {
+		b.Stop()
+		// reason: under strict, Stop() has already closed lis (grpc closes every
+		// listener it serves) and this Close returns "use of closed network
+		// connection"; under permissive it closes the cmux root that Stop() does
+		// not own. Either way the listener is down, which is all the refusal needs.
+		_ = lis.Close()
+		slog.Default().Error("grpcserver: mTLS self-probe failed; refusing to serve",
+			"service", b.serviceName, "addr", lis.Addr().String(), "err", err)
+		refusal := fmt.Errorf("grpcserver: service %q refused to serve: mTLS self-probe of %s failed: %w",
+			b.serviceName, lis.Addr().String(), err)
+		b.ready <- refusal
+		return refusal
+	}
+
+	slog.Default().Info("grpcserver: mTLS self-probe passed",
+		"service", b.serviceName, "addr", lis.Addr().String(), "spiffe_id", svidIDString(b.source))
+	b.ready <- nil
+
+	return <-serveErr
 }
 
 // serve runs one underlying server on its matched listener. cmux closing the

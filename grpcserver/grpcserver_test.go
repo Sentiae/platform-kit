@@ -75,15 +75,58 @@ func TestNew_UnrecognizedMode_RefusesToServe(t *testing.T) {
 	}
 }
 
-func TestNew_PermissiveNilSource_DegradesToPlaintext(t *testing.T) {
-	// nil Source with a non-off mode must degrade to plaintext-only, never panic.
-	b := New(Config{Mode: config.MTLSModePermissive, Source: nil, ServiceName: "test"})
-	if len(b.servers) != 1 {
-		t.Fatalf("permissive+nil source: got %d servers, want 1 (degraded)", len(b.servers))
+func TestNew_PermissiveNilSource_RefusesToServe(t *testing.T) {
+	// D-189: permissive tolerates plaintext PEERS; it never licenses a listener
+	// with no TLS half. A nil Source under permissive built a plaintext-only
+	// server for three weeks on 2026-08-06 while the service claimed a mesh
+	// posture. It must now build NOTHING and refuse.
+	b := New(Config{Mode: config.MTLSModePermissive, Source: nil, ServiceName: "vigil"})
+
+	if len(b.servers) != 0 {
+		t.Fatalf("permissive+nil source: got %d servers, want 0 (no server built)", len(b.servers))
 	}
-	if b.plain == nil || b.mtls != nil {
-		t.Fatalf("permissive+nil source: want plaintext-only, got plain=%v mtls=%v",
+	if b.plain != nil || b.mtls != nil {
+		t.Fatalf("permissive+nil source: no server should be built, got plain=%v mtls=%v",
 			b.plain != nil, b.mtls != nil)
+	}
+	if b.Server() != nil {
+		t.Fatal("permissive+nil source: Server() must be nil on a poisoned builder")
+	}
+
+	lis, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer lis.Close()
+
+	// Serve must refuse PROMPTLY. A Serve that blocks (accepting plaintext) or
+	// returns nil IS the fail-open bug this test exists to catch.
+	done := make(chan error, 1)
+	go func() { done <- b.Serve(lis) }()
+
+	select {
+	case serveErr := <-done:
+		if serveErr == nil {
+			t.Fatal("permissive+nil source: Serve returned nil (plaintext would be served); want a refuse-to-serve error")
+		}
+		msg := serveErr.Error()
+		for _, want := range []string{"vigil", "permissive", "SVID"} {
+			if !strings.Contains(msg, want) {
+				t.Fatalf("Serve error %q must mention %q for operator diagnosis", msg, want)
+			}
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("permissive+nil source: Serve blocked instead of refusing; something is being served on a poisoned builder")
+	}
+
+	// The same verdict must reach a caller gating on Ready.
+	select {
+	case readyErr := <-b.Ready():
+		if readyErr == nil {
+			t.Fatal("permissive+nil source: Ready() yielded nil; a refused boot must not report ready")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("permissive+nil source: Ready() never fired")
 	}
 }
 
