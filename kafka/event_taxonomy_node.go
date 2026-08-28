@@ -6,10 +6,11 @@ package kafka
 // = filename order).
 
 const (
-	EventNodeVersionIngested     = "node.version.ingested"
-	EventNodeVersionRejected     = "node.version.rejected"
-	EventNodeVersionPublished    = "node.version.published"
-	EventDeliveryNodeBundleBuilt = "delivery.node_bundle.built"
+	EventNodeVersionIngested      = "node.version.ingested"
+	EventNodeVersionRejected      = "node.version.rejected"
+	EventNodeVersionPublished     = "node.version.published"
+	EventDeliveryNodeBundleBuilt  = "delivery.node_bundle.built"
+	EventDeliveryNodeBundleFailed = "delivery.node_bundle.failed"
 )
 
 func init() {
@@ -77,7 +78,27 @@ func init() {
 					`"language":{"type":"string","enum":["go","typescript"]},`+
 					`"image_ref":{"type":"string","minLength":1},`+
 					`"digest":{"type":"string","minLength":1},`+
-					`"source_digest":{"type":"string"}`,
+					`"source_digest":{"type":"string"},`+
+					`"commit_sha":{"type":"string"},`+
+					`"signature_digest":{"type":"string"},`+
+					`"scan_id":{"type":"string"}`,
+			),
+		},
+		{
+			Type:        EventDeliveryNodeBundleFailed,
+			Domain:      "delivery",
+			Description: "delivery could not produce one implementation bundle of a node version; the version cannot be published.",
+			Owner:       "delivery-service",
+			Schema: dataSchema(
+				"delivery.node_bundle.failed",
+				[]string{"qualified_name", "semver", "language", "step", "detail"},
+				`"qualified_name":{"type":"string","minLength":1},`+
+					`"semver":{"type":"string"},`+
+					`"language":{"type":"string","enum":["go","typescript"]},`+
+					`"step":{"type":"string","enum":["resolve_org","fetch_source","unpack_source","manifest","build","conformance","scan"]},`+
+					`"detail":{"type":"string","minLength":1},`+
+					`"source_digest":{"type":"string"},`+
+					`"commit_sha":{"type":"string"}`,
 			),
 		},
 	}
