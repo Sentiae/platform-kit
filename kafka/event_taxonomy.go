@@ -770,6 +770,12 @@ const (
 	EventSagaCodeTestDeployDeploymentRequested = "saga.code_test_deploy.deployment_requested"
 	EventSagaCodeTestDeployCompleted           = "saga.code_test_deploy.completed"
 	EventSagaCodeTestDeployFailed              = "saga.code_test_deploy.failed"
+
+	// spec_shipping "saga" (single step): work-service emits this when a
+	// spec transitions to shipped, so the Pulse activity feed can render
+	// the shipment. There is deliberately no ".started" counterpart — no
+	// publisher exists for one.
+	EventSagaSpecShippingCompleted = "saga.spec_shipping.completed"
 )
 
 // ---------- Foundry domain -----------------------------------------------
@@ -778,6 +784,10 @@ const (
 	EventFoundryAgentStarted   = "foundry.agent.started"
 	EventFoundryAgentCompleted = "foundry.agent.completed"
 	EventFoundryAgentFailed    = "foundry.agent.failed"
+
+	// Per-LLM-call audit record (§17.2 AI usage attribution). Produced by
+	// foundry's llm_audit_emitter, consumed by ops-service for analytics.
+	EventFoundryLLMAudit = "foundry.llm.audit"
 
 	EventFoundryApprovalRequested = "foundry.approval.requested"
 	EventFoundryApprovalGranted   = "foundry.approval.granted"
@@ -1610,6 +1620,9 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("saga.code_test_deploy.completed", []string{"saga_id"}, `"saga_id":{"type":"string"},"deployment_id":{"type":"string"}`)},
 	{EventSagaCodeTestDeployFailed, "saga", "The saga failed and compensation (if any) ran", "ops-service",
 		dataSchema("saga.code_test_deploy.failed", []string{"saga_id", "reason"}, `"saga_id":{"type":"string"},"reason":{"type":"string"},"failed_step":{"type":"string"}`)},
+	{EventSagaSpecShippingCompleted, "saga", "A spec transitioned to shipped (single-step spec_shipping flow for the Pulse activity feed)", "work-service",
+		dataSchema("saga.spec_shipping.completed", []string{"saga_id"},
+			`"saga_id":{"type":"string","minLength":1},"title":{"type":"string"},"status":{"type":"string"}`)},
 
 	{EventRuntimeCheckpointCreated, "runtime", "A VM checkpoint was created by the scheduler", "runtime-service",
 		dataSchema("runtime.checkpoint.created", []string{"vm_id", "snapshot_id"}, `"vm_id":{"type":"string"},"snapshot_id":{"type":"string"},"size_bytes":{"type":"integer"},"interval_seconds":{"type":"integer"}`)},
@@ -1629,6 +1642,20 @@ var registeredEvents = []RegisteredEvent{
 		dataSchema("foundry.agent.completed", []string{"agent", "session_id"}, `"agent":{"type":"string"},"session_id":{"type":"string"},"tokens_used":{"type":"integer"}`)},
 	{EventFoundryAgentFailed, "foundry", "An agent loop failed", "foundry-service",
 		dataSchema("foundry.agent.failed", []string{"agent", "error"}, `"agent":{"type":"string"},"error":{"type":"string"}`)},
+
+	{EventFoundryLLMAudit, "foundry", "Per-LLM-call audit record (§17.2 AI usage attribution)", "foundry-service",
+		dataSchema("foundry.llm.audit",
+			[]string{"organization_id", "provider", "model"},
+			`"audit_id":{"type":"string"},"organization_id":{"type":"string","minLength":1},`+
+				`"provider":{"type":"string","minLength":1},"model":{"type":"string","minLength":1},`+
+				`"prompt_tokens":{"type":"integer"},"completion_tokens":{"type":"integer"},`+
+				`"cache_read_tokens":{"type":"integer"},"cache_write_tokens":{"type":"integer"},`+
+				`"total_tokens":{"type":"integer"},"latency_ms":{"type":"integer"},`+
+				`"status":{"type":"string"},"error":{"type":"string"},"cost_usd":{"type":"number"},`+
+				`"tool_name":{"type":"string"},"created_at":{"type":"string"},`+
+				`"user_id":{"type":"string"},"agent_id":{"type":"string"},"team_id":{"type":"string"},`+
+				`"feature_id":{"type":"string"},"spec_id":{"type":"string"},"run_id":{"type":"string"},`+
+				`"session_id":{"type":"string"}`)},
 
 	{EventFoundryApprovalRequested, "foundry", "An approval was requested", "foundry-service",
 		// Schema = the real ApprovalNotification wire shape (foundry approval_notifier.go);
