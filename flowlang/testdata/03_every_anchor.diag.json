@@ -8,5 +8,15 @@
     "code": "free_input_undeclared",
     "line": 38,
     "severity": "warning"
+  },
+  {
+    "code": "wire_type_unknown",
+    "line": 43,
+    "severity": "error"
+  },
+  {
+    "code": "wire_type_incompatible",
+    "line": 48,
+    "severity": "error"
   }
 ]

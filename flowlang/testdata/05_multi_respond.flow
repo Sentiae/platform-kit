@@ -1,7 +1,7 @@
 flow "Response branch" v2
 
 use branch_node = @sentiae/branch@1.0.0
-use http_respond = @sentiae/http-respond@1.0.0
+use respond = @sentiae/respond@1.0.0
 use webhook_trigger = @sentiae/webhook-trigger@1.0.0
 
 node intake: webhook_trigger {
@@ -10,10 +10,10 @@ node intake: webhook_trigger {
 node choose: branch_node {
 }
 
-node respond_false: http_respond {
+node respond_false: respond {
 }
 
-node respond_true: http_respond {
+node respond_true: respond {
 }
 
 wire choose.on_false -> respond_false.body

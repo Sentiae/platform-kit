@@ -7,21 +7,26 @@
   "config": {
     "additionalProperties": false,
     "properties": {
-      "equals": {
+      "pattern": {
         "default": "",
         "type": "string"
       },
-      "field": {
-        "default": "",
+      "type": {
+        "default": "url",
+        "enum": [
+          "url",
+          "regex",
+          "non_empty"
+        ],
         "type": "string"
       }
     },
     "type": "object"
   },
   "display": {
-    "description": "Routes a selected field value through exactly one true or false output.",
-    "icon": "git-branch",
-    "name": "Branch"
+    "description": "Validates a value and routes it through exactly one valid or invalid output.",
+    "icon": "check-circle",
+    "name": "Validate"
   },
   "implementations": {
     "go": {
@@ -40,23 +45,23 @@
   },
   "inputs": [
     {
-      "description": "Payload whose configured field is compared.",
+      "description": "Value to validate.",
       "name": "value",
       "required": true,
       "schema": {}
     }
   ],
-  "name": "@sentiae/branch",
+  "name": "@sentiae/validate",
   "outputs": [
     {
-      "description": "The payload when the configured field equals the comparison value.",
-      "name": "on_true",
+      "description": "The value when validation succeeds.",
+      "name": "valid",
       "required": false,
       "schema": {}
     },
     {
-      "description": "The payload when it does not.",
-      "name": "on_false",
+      "description": "The value when validation fails.",
+      "name": "invalid",
       "required": false,
       "schema": {}
     }

@@ -1,7 +1,7 @@
 # Canonical v2 composition.
 flow "Order intake" v2
 
-use http_respond = @sentiae/http-respond@1.0.0
+use respond = @sentiae/respond@1.0.0
 use secure_http = @acme/secure-http@2.1.0
 use webhook_trigger = @sentiae/webhook-trigger@1.0.0
 
@@ -27,7 +27,7 @@ node fetch_orders: secure_http "Fetch orders" disabled {
 	port in tools: string[] label "Tools"
 }
 
-node response: http_respond {
+node response: respond {
 	port in body label "Response payload"
 }
 

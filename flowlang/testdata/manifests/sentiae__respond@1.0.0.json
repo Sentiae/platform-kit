@@ -6,13 +6,18 @@
   "category": "output",
   "config": {
     "additionalProperties": false,
-    "properties": {},
+    "properties": {
+      "status": {
+        "default": 200,
+        "type": "integer"
+      }
+    },
     "type": "object"
   },
   "display": {
-    "description": "Returns an HTTP response from a flow.",
-    "icon": "reply",
-    "name": "HTTP respond"
+    "description": "Returns the inbound value as the flow's HTTP response.",
+    "icon": "log-out",
+    "name": "Respond"
   },
   "implementations": {
     "go": {
@@ -21,18 +26,26 @@
         "go/go.mod",
         "go/go.sum"
       ]
+    },
+    "typescript": {
+      "entry": "typescript/src/node.ts",
+      "lockfiles": [
+        "typescript/package-lock.json"
+      ]
     }
   },
   "inputs": [
     {
+      "description": "Payload returned as the response body.",
       "name": "body",
       "required": true,
       "schema": {}
     }
   ],
-  "name": "@sentiae/http-respond",
+  "name": "@sentiae/respond",
   "outputs": [
     {
+      "description": "The HTTP response returned by the flow.",
       "name": "response",
       "required": true,
       "schema": {

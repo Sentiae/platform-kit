@@ -3,5 +3,15 @@
     "code": "free_input_undeclared",
     "line": 27,
     "severity": "warning"
+  },
+  {
+    "code": "wire_type_unknown",
+    "line": 35,
+    "severity": "error"
+  },
+  {
+    "code": "wire_type_incompatible",
+    "line": 36,
+    "severity": "error"
   }
 ]

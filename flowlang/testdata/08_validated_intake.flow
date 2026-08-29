@@ -1,0 +1,27 @@
+# validate ROUTES, it does not RETYPE: this flow clears the checker only because
+# @sentiae/respond's `body` is itself {}. Feeding gate.valid into a CONSTRAINED port
+# is still wire_type_unknown — see T-FLOW-PORT-NARROWING.
+flow "Validated intake" v2
+
+use respond = @sentiae/respond@1.0.0
+use validate_node = @sentiae/validate@1.0.0
+use webhook_trigger = @sentiae/webhook-trigger@1.0.0
+
+node intake: webhook_trigger {
+}
+
+node gate: validate_node {
+	type = "non_empty"
+}
+
+node accepted: respond {
+}
+
+wire gate.valid -> accepted.body
+wire intake.body -> gate.value
+
+layout {
+	intake @ 80,100
+	gate @ 400,100
+	accepted @ 720,100
+}

@@ -1,10 +1,54 @@
 package flowlang
 
 import (
+	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+// sidecarErrors reads a golden fixture's diagnostic sidecar and returns its
+// error-severity rows with the message elided. The corpus — not a name list in
+// this file — decides which documents schedule: after the real stdlib
+// manifests landed, a webhook body is unconstrained and five goldens carry an
+// error. Driving the split from the sidecar means a verdict that moves is
+// caught here rather than silently reclassified.
+func sidecarErrors(t *testing.T, flowPath string) []Diagnostic {
+	t.Helper()
+	sidecar := strings.TrimSuffix(flowPath, ".flow") + ".diag.json"
+	b, err := os.ReadFile(sidecar)
+	if err != nil {
+		t.Fatalf("read %s: %v", sidecar, err)
+	}
+	var rows []struct {
+		Code     string   `json:"code"`
+		Line     int      `json:"line"`
+		Severity Severity `json:"severity"`
+	}
+	if err := json.Unmarshal(b, &rows); err != nil {
+		t.Fatalf("decode %s: %v", sidecar, err)
+	}
+	out := []Diagnostic{}
+	for _, r := range rows {
+		if r.Severity == SeverityError {
+			out = append(out, Diagnostic{Severity: r.Severity, Line: r.Line, Code: r.Code})
+		}
+	}
+	return out
+}
+
+// errorRows projects a live finding list onto the sidecar's comparable shape.
+func errorRows(list []Diagnostic) []Diagnostic {
+	out := []Diagnostic{}
+	for _, d := range list {
+		if d.Severity == SeverityError {
+			out = append(out, Diagnostic{Severity: d.Severity, Line: d.Line, Code: d.Code})
+		}
+	}
+	return out
+}
 
 func mustPlan(t *testing.T, text string, m Manifests) *Plan {
 	t.Helper()
@@ -25,6 +69,7 @@ func mustPlan(t *testing.T, text string, m Manifests) *Plan {
 // fail in production.
 func TestSchedule_Order(t *testing.T) {
 	manifests := corpusManifests(t)
+	planned, refused := 0, 0
 	for _, path := range corpusFlows(t) {
 		t.Run(filepath.Base(path), func(t *testing.T) {
 			text := readFixture(t, path)
@@ -33,6 +78,20 @@ func TestSchedule_Order(t *testing.T) {
 				t.Fatalf("Parse: doc=%v diags=%+v", doc != nil, diags)
 			}
 			plan, vdiags := Schedule(doc, manifests)
+			// A golden whose sidecar carries an error row must be REFUSED, and
+			// refused for exactly those rows — not for some other error the
+			// corpus never recorded.
+			if want := sidecarErrors(t, path); len(want) > 0 {
+				refused++
+				if plan != nil {
+					t.Fatalf("Schedule planned a document the corpus marks error-carrying: %+v", want)
+				}
+				if got := errorRows(vdiags); !reflect.DeepEqual(got, want) {
+					t.Fatalf("refusal findings %+v, want %+v", got, want)
+				}
+				return
+			}
+			planned++
 			if plan == nil {
 				t.Fatalf("Schedule refused: %+v", vdiags)
 			}
@@ -58,15 +117,21 @@ func TestSchedule_Order(t *testing.T) {
 		})
 	}
 
-	t.Run("02_order_intake_equals_document_order", func(t *testing.T) {
-		plan := mustPlan(t, readFixture(t, "testdata/02_order_intake.flow"), manifests)
-		want := []string{"intake", "fetch_orders", "response"}
+	// Positive anchor: the split above is real on this corpus. If every golden
+	// landed on one side, the other branch would assert nothing at all.
+	if planned == 0 || refused == 0 {
+		t.Fatalf("corpus split is vacuous: %d planned, %d refused", planned, refused)
+	}
+
+	t.Run("08_validated_intake_equals_document_order", func(t *testing.T) {
+		plan := mustPlan(t, readFixture(t, "testdata/08_validated_intake.flow"), manifests)
+		want := []string{"intake", "gate", "accepted"}
 		if !reflect.DeepEqual(plan.Order, want) {
 			t.Fatalf("order = %v, want %v", plan.Order, want)
 		}
 	})
 
-	// 02 has no tie to break — every wave has exactly one ready candidate — so
+	// 08 has no tie to break — every wave has exactly one ready candidate — so
 	// it cannot observe the tie-break rule at all. 05 can: after `choose`, both
 	// respond nodes are ready at once, and the earliest in DOCUMENT order wins.
 	t.Run("05_multi_respond_breaks_the_tie_by_document_order", func(t *testing.T) {
@@ -103,8 +168,31 @@ func predicateFlow() string {
 		"\turl = \"https://api.example.net/b\"",
 		`}`,
 		``,
-		`wire intake.body -> audit.payload`,
-		`wire intake.body -> worker.payload`,
+		`wire intake.headers -> audit.payload`,
+		`wire intake.headers -> worker.payload`,
+	)
+}
+
+// warningOnlyFlow is a document with real nodes, no respond node, and exactly
+// one warning: the two properties `no_respond_node_is_fire_and_forget` and
+// `a_warning_only_document_still_plans` each need, which no golden fixture
+// carries once the real webhook manifest lands.
+func warningOnlyFlow() string {
+	return flowText(
+		`flow "f" v2`,
+		``,
+		`use secure_http = @acme/secure-http@2.1.0`,
+		`use webhook_trigger = @sentiae/webhook-trigger@1.0.0`,
+		``,
+		`node intake: webhook_trigger {`,
+		`}`,
+		``,
+		`node worker: secure_http {`,
+		"\tport in tools label \"Tools\"",
+		"\turl = \"https://api.example.net/a\"",
+		`}`,
+		``,
+		`wire intake.headers -> worker.payload`,
 	)
 }
 
@@ -129,7 +217,7 @@ func TestSchedule_Predicates(t *testing.T) {
 		{
 			name:     "a_required_input_that_fired_runs_and_a_disabled_node_is_skipped",
 			status:   map[string]Status{"intake": StatusDone, "source": StatusDone},
-			fired:    map[string]map[string]bool{"intake": {"body": true}},
+			fired:    map[string]map[string]bool{"intake": {"headers": true}},
 			wantRun:  []string{"worker"},
 			wantSkip: []string{"audit"},
 		},
@@ -179,7 +267,7 @@ func TestSchedule_FourCases(t *testing.T) {
 	manifests := corpusManifests(t)
 
 	t.Run("no_respond_node_is_fire_and_forget", func(t *testing.T) {
-		plan := mustPlan(t, readFixture(t, "testdata/04_fire_and_forget.flow"), manifests)
+		plan := mustPlan(t, warningOnlyFlow(), manifests)
 		got, slug := plan.Result(map[string]map[string]bool{})
 		if got != ResultFireAndForget || slug != "" {
 			t.Fatalf("got (%q, %q), want (%q, \"\")", got, slug, ResultFireAndForget)
@@ -295,7 +383,7 @@ func TestSchedule_RejectsInvalid(t *testing.T) {
 	}
 
 	t.Run("a_warning_only_document_still_plans", func(t *testing.T) {
-		doc, diags := Parse(readFixture(t, "testdata/02_order_intake.flow"))
+		doc, diags := Parse(warningOnlyFlow())
 		if doc == nil || len(diags) != 0 {
 			t.Fatalf("Parse: doc=%v diags=%+v", doc != nil, diags)
 		}

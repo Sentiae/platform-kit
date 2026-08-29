@@ -11,25 +11,24 @@
         "default": "POST",
         "enum": [
           "GET",
-          "POST"
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE"
         ],
         "type": "string"
       },
       "path": {
-        "default": "/hooks/orders",
+        "default": "/webhook",
         "type": "string"
       }
     },
-    "required": [
-      "method",
-      "path"
-    ],
     "type": "object"
   },
   "display": {
-    "description": "Starts a flow from an HTTP request.",
-    "icon": "webhook",
-    "name": "Webhook trigger"
+    "description": "Starts a flow when an HTTP request arrives and emits the request fields.",
+    "icon": "zap",
+    "name": "Webhook Trigger"
   },
   "implementations": {
     "go": {
@@ -38,26 +37,52 @@
         "go/go.mod",
         "go/go.sum"
       ]
+    },
+    "typescript": {
+      "entry": "typescript/src/node.ts",
+      "lockfiles": [
+        "typescript/package-lock.json"
+      ]
     }
   },
   "inputs": [],
   "name": "@sentiae/webhook-trigger",
   "outputs": [
     {
+      "description": "Parsed request body when present.",
       "name": "body",
+      "required": false,
+      "schema": {}
+    },
+    {
+      "description": "Request headers.",
+      "name": "headers",
       "required": true,
       "schema": {
         "type": "object"
       }
     },
     {
+      "description": "Query-string parameters.",
+      "name": "query",
+      "required": true,
+      "schema": {
+        "type": "object"
+      }
+    },
+    {
+      "description": "HTTP request method.",
       "name": "method",
       "required": true,
       "schema": {
-        "enum": [
-          "GET",
-          "POST"
-        ],
+        "type": "string"
+      }
+    },
+    {
+      "description": "HTTP request path.",
+      "name": "path",
+      "required": true,
+      "schema": {
         "type": "string"
       }
     }

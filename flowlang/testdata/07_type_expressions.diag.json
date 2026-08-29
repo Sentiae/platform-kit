@@ -48,5 +48,10 @@
     "code": "free_input_undeclared",
     "line": 22,
     "severity": "warning"
+  },
+  {
+    "code": "wire_type_unknown",
+    "line": 25,
+    "severity": "error"
   }
 ]

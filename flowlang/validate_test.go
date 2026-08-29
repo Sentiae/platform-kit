@@ -449,18 +449,20 @@ func TestValidate_Codes(t *testing.T) {
 			text: flowText(
 				`flow "f" v2`,
 				``,
-				`use branch_node = @sentiae/branch@1.0.0`,
-				`use webhook_trigger = @sentiae/webhook-trigger@1.0.0`,
+				`use secure_http = @acme/secure-http@2.1.0`,
 				``,
-				`node intake: webhook_trigger {`,
+				`node source: secure_http {`,
+				"\turl = \"https://api.example.net/a\"",
 				`}`,
 				``,
-				`node choose: branch_node {`,
+				`node sink: secure_http {`,
+				"\turl = \"https://api.example.net/b\"",
+				"\tport in tools: integer",
 				`}`,
 				``,
-				`wire intake.method -> choose.value`,
+				`wire source.result -> sink.tools`,
 			),
-			want: e(12, CodeWireTypeIncompatible, `"intake.method" cannot feed "choose.value": string cannot feed object`),
+			want: e(14, CodeWireTypeIncompatible, `"source.result" cannot feed "sink.tools": object cannot feed integer`),
 		},
 		{
 			name: "wire_type_unknown",
@@ -600,9 +602,9 @@ func TestValidate_Codes(t *testing.T) {
 			text: flowText(
 				`flow "f" v2`,
 				``,
-				`use http_respond = @sentiae/http-respond@1.0.0`,
+				`use respond = @sentiae/respond@1.0.0`,
 				``,
-				`node out: http_respond {`,
+				`node out: respond {`,
 				`}`,
 			),
 			want:   Diagnostic{Severity: SeverityInfo, Line: 1, Code: CodeFireAndForget, Message: msgFireAndForget},
@@ -705,7 +707,7 @@ func TestValidate_WireInheritance(t *testing.T) {
 			"\tport in tools"+toolsType,
 			`}`,
 			``,
-			`wire intake.body -> worker.payload`,
+			`wire intake.headers -> worker.payload`,
 			`wire `+sourceEndpoint+` -> worker.tools`,
 		)
 		parsed, diags := Parse(flowText(lines...))
@@ -716,7 +718,7 @@ func TestValidate_WireInheritance(t *testing.T) {
 	}
 
 	t.Run("untyped_free_input_inherits_its_source", func(t *testing.T) {
-		d := doc(t, "", "intake.body", nil, nil)
+		d := doc(t, "", "intake.headers", nil, nil)
 		for _, diag := range Validate(d, manifests) {
 			if diag.Severity == SeverityError {
 				t.Fatalf("unexpected error finding: %+v", diag)
@@ -742,8 +744,8 @@ func TestValidate_WireInheritance(t *testing.T) {
 	})
 
 	t.Run("declared_type_refuses_the_inherited_source", func(t *testing.T) {
-		d := doc(t, ": integer", "intake.body", nil, nil)
-		want := e(15, CodeWireTypeIncompatible, `"intake.body" cannot feed "worker.tools": object cannot feed integer`)
+		d := doc(t, ": integer", "intake.headers", nil, nil)
+		want := e(15, CodeWireTypeIncompatible, `"intake.headers" cannot feed "worker.tools": object cannot feed integer`)
 		if !hasDiagnostic(Validate(d, manifests), want) {
 			t.Fatalf("want %+v in %+v", want, Validate(d, manifests))
 		}
