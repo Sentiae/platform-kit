@@ -97,13 +97,14 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 			"/runtime.v1.GraphService/GetGraphExecution",
 			"/runtime.v1.GraphService/CancelGraphExecution",
 			"/runtime.v1.GraphService/ListNodeExecutions",
+			"/node.v1.NodeService/ListNodes",
 		},
 	}
 	wantCount := map[string]int{
 		"spiffe://sentiae.io/svc/work":        47,
 		"spiffe://sentiae.io/svc/codegen":     48,
 		"spiffe://sentiae.io/svc/composition": 50,
-		"spiffe://sentiae.io/svc/canvas":      53,
+		"spiffe://sentiae.io/svc/canvas":      54,
 	}
 
 	g := DefaultMeshPolicy()

@@ -119,7 +119,7 @@ func withCatalogReads(extra ...string) []string {
 //
 //   - codegen     → runtime-service (compile verification)
 //   - composition → catalog + work body snapshots
-//   - canvas      → runtime-service graph lifecycle
+//   - canvas      → runtime-service graph lifecycle + node-service registry read
 //
 // Governing principle (D-223, GRANT-WHAT-YOU-CALL): a restricted identity's
 // method set is the audited list of RPCs its code invokes on live paths — grant
@@ -141,7 +141,12 @@ var methodScopedCatalogReaders = map[string][]string{
 		"/work.v1.WorkBodyService/UpsertBodySnapshot",
 	),
 
-	// canvas drives the runtime graph lifecycle.
+	// canvas drives the runtime graph lifecycle and reads the node registry
+	// (D-388): node-service P1 is the single definition of what a node is, and
+	// canvas's flow palette live-reads it (ListNodes, "official" tier) on every
+	// request plus once at boot to refresh its projection rows. Without this
+	// method the palette is denied post-authorization and silently serves stale
+	// rows — the palette advertised port names no node emitted for three weeks.
 	"spiffe://sentiae.io/svc/canvas": withCatalogReads(
 		"/runtime.v1.GraphService/CreateGraph",
 		"/runtime.v1.GraphService/DeployGraph",
@@ -149,6 +154,7 @@ var methodScopedCatalogReaders = map[string][]string{
 		"/runtime.v1.GraphService/GetGraphExecution",
 		"/runtime.v1.GraphService/CancelGraphExecution",
 		"/runtime.v1.GraphService/ListNodeExecutions",
+		"/node.v1.NodeService/ListNodes",
 	),
 }
 
