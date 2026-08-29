@@ -356,16 +356,66 @@ func TestAssertAssignment_HasPartitions_NoError(t *testing.T) {
 	}
 }
 
-func TestAssertAssignment_HealthPrepopulated_ShortCircuits(t *testing.T) {
+// The short-circuit is driven by the processed counter, NOT by health-map
+// population: the map is seeded for every configured topic at Start, so its
+// contents say "registered" and can no longer stand in for "fetching".
+func TestAssertAssignment_MessagesProcessed_ShortCircuits(t *testing.T) {
 	fake := &fakeDescriber{resp: emptyGroupResp("test-group")}
 	c := newAssignmentConsumer(fake)
-	// Simulate a message already processed.
+	// Simulate a message already processed, exactly as record* does.
 	c.health["t"] = &topicHealth{Topic: "t", MessagesOK: 1}
+	c.processed.Add(1)
 
 	c.assertAssignment(context.Background())
 
 	if err := c.AssignmentError(); err != nil {
 		t.Errorf("unexpected AssignmentError: %v", err)
+	}
+	if atomic.LoadInt32(&fake.calls) != 0 {
+		t.Errorf("describer called %d times, want 0 (short-circuit)", fake.calls)
+	}
+}
+
+// The guard this task nearly killed. A registered-but-idle consumer has a full
+// health map and has processed nothing; the zero-partition assertion MUST still
+// fire. Seeding the map without severing the coupling made this pass silently
+// with the describer never called even once.
+func TestAssertAssignment_SeededHealthIdle_StillDetectsZeroPartitions(t *testing.T) {
+	fake := &fakeDescriber{resp: emptyGroupResp("test-group")}
+	c := newAssignmentConsumer(fake)
+	c.registerTopics() // what Start does: every configured topic, zero counters
+
+	if len(c.health) == 0 {
+		t.Fatal("precondition: health map must be seeded for this to be a real test")
+	}
+
+	c.assertAssignment(context.Background())
+
+	if c.AssignmentError() == nil {
+		t.Fatal("GUARD DEAD: zero-partition group reported healthy despite seeded health")
+	}
+	if !strings.Contains(c.AssignmentError().Error(), "ZERO partitions") {
+		t.Errorf("error = %q, want mention of ZERO partitions", c.AssignmentError().Error())
+	}
+	if atomic.LoadInt32(&fake.calls) == 0 {
+		t.Error("describer never called: the guard short-circuited on seeded health")
+	}
+}
+
+// A dead-lettered unmarshal failure reaches recordDeadLetter WITHOUT
+// recordFailure, so it leaves LastProcessed zero. The processed counter must
+// still count it: a consumer that fetched and parked poison IS fetching, and
+// must not be reported as a zero-partition group.
+func TestAssertAssignment_DeadLetterOnly_CountsAsFlowing(t *testing.T) {
+	fake := &fakeDescriber{resp: emptyGroupResp("test-group")}
+	c := newAssignmentConsumer(fake)
+	c.registerTopics()
+	c.recordDeadLetter("t")
+
+	c.assertAssignment(context.Background())
+
+	if err := c.AssignmentError(); err != nil {
+		t.Errorf("unexpected AssignmentError after a dead-letter: %v", err)
 	}
 	if atomic.LoadInt32(&fake.calls) != 0 {
 		t.Errorf("describer called %d times, want 0 (short-circuit)", fake.calls)

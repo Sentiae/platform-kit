@@ -180,9 +180,19 @@ type KafkaConsumer struct {
 	// once the assignment-assertion goroutine concludes. nil until then.
 	assignErr atomic.Pointer[error]
 
-	// health tracks per-topic last-processed info for /healthz/events.
+	// health tracks per-topic last-processed info for /healthz/events. It is
+	// PURELY DESCRIPTIVE: nothing behavioural may key off its contents or its
+	// length. Entries are seeded at Start for every configured topic, so
+	// presence means "registered", not "has processed a message".
 	health   map[string]*topicHealth
 	healthMu sync.RWMutex
+
+	// processed counts terminal message outcomes (ok, failed, dead-lettered).
+	// It is the ONLY "have we actually fetched anything" signal, deliberately
+	// independent of the health map: assertAssignment previously inferred this
+	// from len(health) > 0, which seeding the map at registration would have
+	// silently and permanently satisfied, disabling the zero-partition guard.
+	processed atomic.Int64
 }
 
 // topicHealth is updated on every processed message.
@@ -230,6 +240,8 @@ func NewConsumer(cfg ConsumerConfig) (*KafkaConsumer, error) {
 }
 
 // Health returns a snapshot of per-topic processing stats. Safe for /healthz.
+// Every configured topic is present from Start onward, so an entry with zero
+// counters and a zero LastProcessed means "registered, idle" — not "absent".
 // Lag is recorded per-message at process time (HighWaterMark - Offset - 1);
 // under a GroupTopics reader Config().Topic is empty so no reader lookup is
 // possible or needed here.
@@ -289,6 +301,11 @@ func (c *KafkaConsumer) Subscribe(eventType string, handler EventHandler) {
 // Start also launches an assignment-assertion goroutine that fails loud if
 // the group never receives a partition assignment (see AssignmentError).
 func (c *KafkaConsumer) Start(ctx context.Context) error {
+	// Seed health BEFORE the reader exists: runs exactly once per process,
+	// covers every configured topic, and is reached whether or not a message
+	// ever arrives.
+	c.registerTopics()
+
 	reader := c.buildReader()
 	c.mu.Lock()
 	c.reader = reader
@@ -558,11 +575,11 @@ func (c *KafkaConsumer) assertAssignment(ctx context.Context) {
 
 	for {
 		// Short-circuit: if any message has already been recorded, the group
-		// is clearly assigned and fetching — no need to describe.
-		c.healthMu.RLock()
-		flowing := len(c.health) > 0
-		c.healthMu.RUnlock()
-		if flowing {
+		// is clearly assigned and fetching — no need to describe. This reads
+		// the processed counter, NOT the health map: the map is seeded at
+		// registration, so len(health) > 0 is true from process start and
+		// would short-circuit this guard into a permanent no-op.
+		if c.processed.Load() > 0 {
 			c.cfg.Logger.Info("kafka consumer group is fetching messages (assignment confirmed)",
 				"group", c.cfg.GroupID, "topics", c.cfg.Topics)
 			return
@@ -835,34 +852,53 @@ func (c *KafkaConsumer) validateMessagePayload(event CloudEvent) error {
 	return ValidateRawPayload(event.Type, generic)
 }
 
-func (c *KafkaConsumer) recordSuccess(topic, eventType string, offset, lag int64) {
-	c.healthMu.Lock()
+// healthFor returns the health entry for topic, creating a zeroed one if
+// absent. The caller MUST hold c.healthMu for writing. Single get-or-create
+// site shared by the registration seed and all three record* functions.
+func (c *KafkaConsumer) healthFor(topic string) *topicHealth {
 	h, ok := c.health[topic]
 	if !ok {
 		h = &topicHealth{Topic: topic, GroupID: c.cfg.GroupID}
 		c.health[topic] = h
 	}
+	return h
+}
+
+// registerTopics seeds a zeroed health entry for every configured topic so a
+// registered-but-idle consumer reports as registered rather than as absent.
+// Before this existed, /healthz/consumers listed only topics the CURRENT
+// process had already processed a message on, so a freshly-deployed service
+// returned "consumers": null and read to an operator as "no consumers running".
+func (c *KafkaConsumer) registerTopics() {
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	for _, t := range c.cfg.Topics {
+		c.healthFor(t)
+	}
+}
+
+func (c *KafkaConsumer) recordSuccess(topic, eventType string, offset, lag int64) {
+	c.healthMu.Lock()
+	h := c.healthFor(topic)
 	h.LastOffset = offset
 	h.LastEventType = eventType
 	h.LastProcessed = time.Now().UTC()
 	h.MessagesOK++
 	h.Lag = lag
 	c.healthMu.Unlock()
+	c.processed.Add(1)
 }
 
 func (c *KafkaConsumer) recordFailure(topic, eventType string, offset, lag int64) {
 	c.healthMu.Lock()
-	h, ok := c.health[topic]
-	if !ok {
-		h = &topicHealth{Topic: topic, GroupID: c.cfg.GroupID}
-		c.health[topic] = h
-	}
+	h := c.healthFor(topic)
 	h.LastOffset = offset
 	h.LastEventType = eventType
 	h.LastProcessed = time.Now().UTC()
 	h.MessagesFailed++
 	h.Lag = lag
 	c.healthMu.Unlock()
+	c.processed.Add(1)
 }
 
 // recordDeadLetter increments the per-topic dead-letter counter, keyed on the
@@ -870,13 +906,10 @@ func (c *KafkaConsumer) recordFailure(topic, eventType string, offset, lag int64
 // routed to its dead-letter destination.
 func (c *KafkaConsumer) recordDeadLetter(topic string) {
 	c.healthMu.Lock()
-	h, ok := c.health[topic]
-	if !ok {
-		h = &topicHealth{Topic: topic, GroupID: c.cfg.GroupID}
-		c.health[topic] = h
-	}
+	h := c.healthFor(topic)
 	h.MessagesDeadLettered++
 	c.healthMu.Unlock()
+	c.processed.Add(1)
 	// Prometheus counter (rides OTLP via the otel.Init bridge). Kept outside the
 	// healthMu critical section — the CounterVec is independently synchronized.
 	messagesDeadLetteredTotal.WithLabelValues(topic, c.cfg.GroupID).Inc()

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
@@ -106,5 +107,80 @@ func TestConsumersHealthzHandler_DeadLetterDegrades(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("healthz entry for dlqtopic missing: %+v", body.Consumers)
+	}
+}
+
+// A registered-but-idle consumer must be REPORTED as registered. Before the
+// health map was seeded at registration, entries existed only once a message
+// had been processed, so a freshly-deployed service returned "consumers": null
+// and read to an operator as "no consumers running" — traffic history reported
+// as registration.
+func TestRegisterTopics_IdleConsumer_ReportedWithZeroCounters(t *testing.T) {
+	c, err := NewConsumer(ConsumerConfig{
+		Brokers: []string{"localhost:9092"},
+		GroupID: "idlegroup",
+		Topics:  []string{"t1", "t2"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.Subscribe("test.event.fired", func(_ context.Context, _ CloudEvent) error { return nil })
+
+	c.registerTopics() // Start does this before the reader exists
+
+	got := map[string]topicHealth{}
+	for _, h := range c.Health() {
+		got[h.Topic] = h
+	}
+	for _, topic := range []string{"t1", "t2"} {
+		h, ok := got[topic]
+		if !ok {
+			t.Fatalf("topic %q missing from Health(): %+v", topic, got)
+		}
+		if h.GroupID != "idlegroup" {
+			t.Errorf("topic %q group_id = %q, want idlegroup", topic, h.GroupID)
+		}
+		if h.MessagesOK != 0 || h.MessagesFailed != 0 || h.MessagesDeadLettered != 0 || h.Lag != 0 || h.LastOffset != 0 {
+			t.Errorf("topic %q seeded with non-zero counters: %+v", topic, h)
+		}
+		// Zero LastProcessed is what distinguishes "registered, idle" from
+		// "has processed messages" on the JSON surface (last_commit).
+		if !h.LastProcessed.IsZero() {
+			t.Errorf("topic %q seeded with non-zero last_processed: %v", topic, h.LastProcessed)
+		}
+	}
+
+	// And it must reach the wire surface operators actually read.
+	w := httptest.NewRecorder()
+	ConsumersHealthzHandler("test-svc", c).ServeHTTP(w, httptest.NewRequest("GET", "/healthz/consumers", nil))
+	if w.Code != http.StatusOK {
+		t.Errorf("status = %d, want 200 (idle is not degraded)", w.Code)
+	}
+	var body ConsumersHealthResponse
+	if err := json.NewDecoder(w.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(body.Consumers) != 2 {
+		t.Fatalf("consumers = %+v, want 2 entries", body.Consumers)
+	}
+	for _, e := range body.Consumers {
+		if !e.LastCommit.IsZero() {
+			t.Errorf("idle entry %q has non-zero last_commit: %v", e.Topic, e.LastCommit)
+		}
+	}
+}
+
+// An empty consumer list must serialise as [] — a nil slice marshals as null,
+// which makes naive clients TypeError rather than see an empty list.
+func TestConsumersHealthzHandler_EmptyConsumers_MarshalsAsArrayNotNull(t *testing.T) {
+	w := httptest.NewRecorder()
+	ConsumersHealthzHandler("test-svc").ServeHTTP(w, httptest.NewRequest("GET", "/healthz/consumers", nil))
+
+	raw := w.Body.String()
+	if !strings.Contains(raw, `"consumers":[]`) {
+		t.Errorf("body = %s, want \"consumers\":[]", raw)
+	}
+	if strings.Contains(raw, `"consumers":null`) {
+		t.Errorf("consumers serialised as null: %s", raw)
 	}
 }

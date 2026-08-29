@@ -51,8 +51,12 @@ type ConsumersHealthResponse struct {
 func ConsumersHealthzHandler(service string, consumers ...*KafkaConsumer) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		resp := ConsumersHealthResponse{
-			Service:     service,
-			Status:      "ok",
+			Service: service,
+			Status:  "ok",
+			// Initialised, not nil: a nil slice marshals as JSON null, which
+			// makes naive clients TypeError instead of seeing an empty list.
+			// Field names and types are unchanged — additive only.
+			Consumers:   []ConsumerLagEntry{},
 			GeneratedAt: time.Now().UTC(),
 		}
 
