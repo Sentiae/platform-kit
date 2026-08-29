@@ -137,11 +137,11 @@ func at(t *testing.T, m map[string]any, path ...string) map[string]any {
 // one place, so deleting the rule the row names turns that row red.
 func TestValidate_Codes(t *testing.T) {
 	secureHTTP := decodeManifest(t, "manifests/acme__secure-http@2.1.0.json")
-	respond := decodeManifest(t, "manifests/sentiae__http-respond@1.0.0.json")
+	respond := decodeManifest(t, "manifests/sentiae__respond@1.0.0.json")
 	trigger := decodeManifest(t, "manifests/sentiae__webhook-trigger@1.0.0.json")
 
 	// Positive anchor: the bases are clean, so every finding below is the row's.
-	for name, base := range map[string]map[string]any{"secure-http": secureHTTP, "http-respond": respond, "webhook-trigger": trigger} {
+	for name, base := range map[string]map[string]any{"secure-http": secureHTTP, "respond": respond, "webhook-trigger": trigger} {
 		b, err := json.Marshal(base)
 		if err != nil {
 			t.Fatalf("%s: marshal: %v", name, err)
