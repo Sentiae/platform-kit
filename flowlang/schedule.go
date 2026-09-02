@@ -32,6 +32,8 @@ type PlanNode struct {
 	Disabled bool
 	// Required is the manifest inputs with `required: true`.
 	Required []string
+	// Outputs is the manifest outputs in declaration order.
+	Outputs []string
 	// Promoted maps a promoted port id to the config key it exposes.
 	Promoted map[string]string
 	// Upstream is the slugs feeding this node, in document order, deduplicated.
@@ -52,7 +54,12 @@ type Edge struct {
 type Plan struct {
 	// Order is a Kahn topological order; among ready candidates the earliest in
 	// document order is taken first, so the order is a pure function of the file.
-	Order    []string
+	Order []string
+	// Sequence is the order nodes are listed in: on a scheduled plan it is
+	// document order (disabled nodes included); on a lowered plan Lower sets it
+	// to Order, so it is always topological, is the order ToWire carries, and is
+	// the Kahn tie-break PlanFromWire reproduces exactly.
+	Sequence []string
 	Nodes    map[string]PlanNode
 	Edges    []Edge
 	Trigger  string
@@ -87,6 +94,9 @@ func Schedule(doc *Doc, m Manifests) (*Plan, []Diagnostic) {
 					pn.Required = append(pn.Required, in.Name)
 				}
 			}
+			for _, o := range man.Outputs {
+				pn.Outputs = append(pn.Outputs, o.Name)
+			}
 		}
 		for _, p := range n.Ports {
 			if p.Dir == "in" && p.ConfigKey != "" {
@@ -98,6 +108,7 @@ func Schedule(doc *Doc, m Manifests) (*Plan, []Diagnostic) {
 		}
 		plan.Nodes[n.Slug] = pn
 		slugs = append(slugs, n.Slug)
+		plan.Sequence = append(plan.Sequence, n.Slug)
 		if pn.Role == "trigger" && plan.Trigger == "" {
 			plan.Trigger = n.Slug
 		}

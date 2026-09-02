@@ -1,0 +1,97 @@
+{
+  "$schema": "https://sentiae.com/schemas/node-manifest/v1.json",
+  "capabilities": {
+    "egress": [
+      "*"
+    ]
+  },
+  "category": "http",
+  "config": {
+    "additionalProperties": false,
+    "properties": {
+      "headers": {
+        "default": {},
+        "type": "object"
+      },
+      "method": {
+        "default": "GET",
+        "enum": [
+          "GET",
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE"
+        ],
+        "type": "string"
+      },
+      "url": {
+        "format": "uri",
+        "type": "string"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "type": "object"
+  },
+  "display": {
+    "description": "Makes an outbound HTTP call and returns its status, raw body, and parsed JSON body.",
+    "icon": "globe",
+    "name": "HTTP Request"
+  },
+  "implementations": {
+    "go": {
+      "entry": "go/node.go",
+      "lockfiles": [
+        "go/go.mod",
+        "go/go.sum"
+      ]
+    },
+    "typescript": {
+      "entry": "typescript/src/node.ts",
+      "lockfiles": [
+        "typescript/package-lock.json"
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "description": "Optional JSON request body.",
+      "name": "body",
+      "required": false,
+      "schema": {}
+    }
+  ],
+  "name": "@sentiae/http-request",
+  "outputs": [
+    {
+      "description": "HTTP status code.",
+      "name": "status_code",
+      "required": true,
+      "schema": {
+        "type": "integer"
+      }
+    },
+    {
+      "description": "Raw response body.",
+      "name": "body",
+      "required": true,
+      "schema": {
+        "type": "string"
+      }
+    },
+    {
+      "description": "Parsed JSON body when the response is JSON.",
+      "name": "data",
+      "required": false,
+      "schema": {}
+    }
+  ],
+  "resources": {
+    "memoryMiB": 128,
+    "timeoutMs": 30000
+  },
+  "role": null,
+  "secrets": [],
+  "shape": "inline"
+}

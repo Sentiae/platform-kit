@@ -1,0 +1,63 @@
+{
+  "$schema": "https://sentiae.com/schemas/node-manifest/v1.json",
+  "capabilities": {
+    "egress": []
+  },
+  "category": "transform",
+  "config": {
+    "additionalProperties": false,
+    "properties": {
+      "key": {
+        "default": "name",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "display": {
+    "description": "Picks one string field out of an unconstrained object and emits it as a typed string.",
+    "icon": "mouse-pointer-click",
+    "name": "Pick Name"
+  },
+  "implementations": {
+    "go": {
+      "entry": "go/node.go",
+      "lockfiles": [
+        "go/go.mod",
+        "go/go.sum"
+      ]
+    },
+    "typescript": {
+      "entry": "typescript/src/node.ts",
+      "lockfiles": [
+        "typescript/package-lock.json"
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "description": "The object to pick from.",
+      "name": "body",
+      "required": true,
+      "schema": {}
+    }
+  ],
+  "name": "@acme/pick-name",
+  "outputs": [
+    {
+      "description": "The picked string.",
+      "name": "name",
+      "required": true,
+      "schema": {
+        "type": "string"
+      }
+    }
+  ],
+  "resources": {
+    "memoryMiB": 64,
+    "timeoutMs": 5000
+  },
+  "role": null,
+  "secrets": [],
+  "shape": "inline"
+}

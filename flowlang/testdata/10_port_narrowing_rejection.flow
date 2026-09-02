@@ -1,0 +1,17 @@
+flow "Phase 4 narrowing rejection" v2
+
+use hello = @acme/hello@1.0.9
+use webhook_trigger = @sentiae/webhook-trigger@1.0.0
+
+node intake: webhook_trigger {
+}
+
+node greet: hello {
+}
+
+wire intake.body -> greet.name
+
+layout {
+	intake @ 80,120
+	greet @ 400,120
+}

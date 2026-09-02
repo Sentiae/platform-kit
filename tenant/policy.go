@@ -131,6 +131,7 @@ var methodScopedCatalogReaders = map[string][]string{
 
 	// codegen verifies generated code by compiling it through runtime-service.
 	"spiffe://sentiae.io/svc/codegen": withCatalogReads(
+		"/node.v1.NodeService/ResolvePins",
 		"/runtime.v1.RuntimeService/Compile",
 	),
 
@@ -184,6 +185,7 @@ func addMethodScopedCatalogReaders(m map[string]ServiceGrant) {
 // grant resident in the binary rides every re-bake beside the RPCs it names.
 var verificationIdentityGrants = map[string][]string{
 	"spiffe://sentiae.io/svc/verify": {
+		"/delivery.v1.DeliveryService/RunFlow",
 		"/runtime.v1.ResourceProvisioning/GetResourceStatus",
 		"/node.v1.NodeService/RegisterNodeRepository",
 		"/git.v1.GitService/CreateRepository",

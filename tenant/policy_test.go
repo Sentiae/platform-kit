@@ -83,6 +83,7 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 	expected := map[string][]string{
 		"spiffe://sentiae.io/svc/work": nil,
 		"spiffe://sentiae.io/svc/codegen": {
+			"/node.v1.NodeService/ResolvePins",
 			"/runtime.v1.RuntimeService/Compile",
 		},
 		"spiffe://sentiae.io/svc/composition": {
@@ -102,7 +103,7 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 	}
 	wantCount := map[string]int{
 		"spiffe://sentiae.io/svc/work":        47,
-		"spiffe://sentiae.io/svc/codegen":     48,
+		"spiffe://sentiae.io/svc/codegen":     49,
 		"spiffe://sentiae.io/svc/composition": 50,
 		"spiffe://sentiae.io/svc/canvas":      54,
 	}
@@ -178,8 +179,8 @@ func TestVerificationIdentityGrantPinned(t *testing.T) {
 			if !gr.CrossOrg {
 				t.Fatalf("%q must have CrossOrg", svid)
 			}
-			if len(gr.Methods) != 4 {
-				t.Fatalf("grant has %d methods, want exactly 4 (%v)", len(gr.Methods), sortedKeys(gr.Methods))
+			if len(gr.Methods) != 5 {
+				t.Fatalf("grant has %d methods, want exactly 5 (%v)", len(gr.Methods), sortedKeys(gr.Methods))
 			}
 			if _, ok := gr.Methods[granted]; !ok {
 				t.Fatalf("grant's methods are %v, want %q among them", sortedKeys(gr.Methods), granted)

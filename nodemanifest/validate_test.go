@@ -178,6 +178,10 @@ func TestValidate_Codes(t *testing.T) {
 			wantCode: CodeRoleInvalid, wantPath: "/role", wantMsg: msgRoleInvalid},
 		{name: "display_name_required", base: secureHTTP, mutate: func(m map[string]any) { at(t, m, "display")["name"] = "" },
 			wantCode: CodeDisplayNameRequired, wantPath: "/display/name", wantMsg: msgDisplayNameRequired},
+		{name: "display_icon_required", base: secureHTTP, mutate: func(m map[string]any) { at(t, m, "display")["icon"] = "" },
+			wantCode: CodeDisplayIconRequired, wantPath: "/display/icon", wantMsg: msgDisplayIconRequired},
+		{name: "display_description_required", base: secureHTTP, mutate: func(m map[string]any) { at(t, m, "display")["description"] = "" },
+			wantCode: CodeDisplayDescriptionRequired, wantPath: "/display/description", wantMsg: msgDisplayDescriptionRequired},
 		{name: "def_name_invalid", base: secureHTTP, mutate: func(m map[string]any) {
 			defs := at(t, m, "$defs")
 			defs["result"] = defs["Result"]
@@ -326,6 +330,7 @@ func TestValidate_Codes(t *testing.T) {
 var allCodes = []string{
 	CodeJSONInvalid, CodeNotObject, CodeTypeMismatch, CodeMissingKey, CodeKeywordUnknown,
 	CodeSchemaURL, CodeNameInvalid, CodeCategoryInvalid, CodeRoleInvalid, CodeDisplayNameRequired,
+	CodeDisplayIconRequired, CodeDisplayDescriptionRequired,
 	CodeDefNameInvalid, CodeTypeInvalid, CodeRefInvalid, CodeRefUnresolved, CodeFormatInvalid,
 	CodeFormatWithoutString, CodeItemsWithoutArray, CodeObjectKeywordWithoutObject,
 	CodeRequiredNotProperty, CodeAdditionalPropertiesNotBool, CodeEnumEmpty, CodeEnumDuplicate,

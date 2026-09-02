@@ -22,6 +22,8 @@ const (
 	CodeCategoryInvalid             = "category_invalid"
 	CodeRoleInvalid                 = "role_invalid"
 	CodeDisplayNameRequired         = "display_name_required"
+	CodeDisplayIconRequired         = "display_icon_required"
+	CodeDisplayDescriptionRequired  = "display_description_required"
 	CodeDefNameInvalid              = "def_name_invalid"
 	CodeTypeInvalid                 = "type_invalid"
 	CodeRefInvalid                  = "ref_invalid"
@@ -66,6 +68,8 @@ const (
 	msgCategoryInvalid             = "category must be one of trigger, http, transform, branch, data, code, ai, output, vendor"
 	msgRoleInvalid                 = `role must be null, "trigger" or "respond"`
 	msgDisplayNameRequired         = "display.name must be non-empty"
+	msgDisplayIconRequired         = "display.icon must be non-empty"
+	msgDisplayDescriptionRequired  = "display.description must be non-empty"
 	msgDefNameInvalid              = "$defs key must match [A-Z][A-Za-z0-9]{0,63}"
 	msgTypeInvalid                 = "type must be one of null, boolean, integer, number, string, object, array"
 	msgRefInvalid                  = "$ref must match #/$defs/<DefName>"
@@ -166,6 +170,12 @@ func Validate(m *Manifest) []Problem {
 	}
 	if m.Display.Name == "" {
 		v.add("/display/name", CodeDisplayNameRequired, msgDisplayNameRequired)
+	}
+	if m.Display.Icon == "" {
+		v.add("/display/icon", CodeDisplayIconRequired, msgDisplayIconRequired)
+	}
+	if m.Display.Description == "" {
+		v.add("/display/description", CodeDisplayDescriptionRequired, msgDisplayDescriptionRequired)
 	}
 	if m.Shape != "inline" && m.Shape != "standalone_service" {
 		v.add("/shape", CodeShapeInvalid, msgShapeInvalid)

@@ -1,0 +1,39 @@
+flow "Phase 4 acceptance" v2
+
+use hello = @acme/hello@1.0.9
+use http_request = @sentiae/http-request@1.0.0
+use pick_name = @acme/pick-name@1.0.0
+use respond = @sentiae/respond@1.0.0
+use webhook_trigger = @sentiae/webhook-trigger@1.0.0
+
+node intake: webhook_trigger {
+	path = "/phase-4"
+}
+
+node pick: pick_name {
+}
+
+node greet: hello {
+}
+
+node echo: http_request {
+	headers = {"content-type": "application/json"}
+	method = "POST"
+	url = "https://httpbin.org/post"
+}
+
+node reply: respond {
+}
+
+wire echo.data -> reply.body
+wire greet.out -> echo.body
+wire intake.body -> pick.body
+wire pick.name -> greet.name
+
+layout {
+	intake @ 80,120
+	pick @ 300,120
+	greet @ 520,120
+	echo @ 740,120
+	reply @ 960,120
+}

@@ -1,0 +1,86 @@
+{
+  "$defs": {
+    "Greeting": {
+      "additionalProperties": false,
+      "properties": {
+        "greeting": {
+          "type": "string"
+        },
+        "impl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "greeting",
+        "impl"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://sentiae.com/schemas/node-manifest/v1.json",
+  "capabilities": {
+    "egress": []
+  },
+  "category": "transform",
+  "config": {
+    "additionalProperties": false,
+    "properties": {
+      "prefix": {
+        "default": "hello",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
+  "display": {
+    "description": "Greets by name.",
+    "icon": "smile",
+    "name": "Hello"
+  },
+  "implementations": {
+    "go": {
+      "entry": "go/node.go",
+      "lockfiles": [
+        "go/go.mod",
+        "go/go.sum"
+      ]
+    },
+    "typescript": {
+      "entry": "typescript/src/node.ts",
+      "lockfiles": [
+        "typescript/package-lock.json"
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "name": "name",
+      "required": true,
+      "schema": {
+        "type": "string"
+      }
+    }
+  ],
+  "name": "@acme/hello",
+  "outputs": [
+    {
+      "name": "out",
+      "required": true,
+      "schema": {
+        "$ref": "#/$defs/Greeting"
+      }
+    }
+  ],
+  "resources": {
+    "memoryMiB": 128,
+    "timeoutMs": 30000
+  },
+  "role": null,
+  "secrets": [
+    {
+      "name": "greeting_suffix",
+      "required": false
+    }
+  ],
+  "shape": "inline"
+}
