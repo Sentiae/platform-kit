@@ -1,7 +1,7 @@
 flow "Phase 4 acceptance" v2
 
 use hello = @acme/hello@1.0.9
-use http_request = @sentiae/http-request@1.0.1
+use http_request = @sentiae/http-request@1.0.2
 use pick_name = @acme/pick-name@1.0.0
 use respond = @sentiae/respond@1.0.0
 use webhook_trigger = @sentiae/webhook-trigger@1.0.0

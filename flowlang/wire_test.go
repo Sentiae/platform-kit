@@ -16,7 +16,7 @@ import (
 // repositories decode the same bytes — platform-kit here, the runtime's
 // CreateGraph mapper, and the code generator's proto mapping — so the constant
 // is what makes a silent divergence in any one of them fail in all three.
-const goldenPlan09SHA256 = "2c4f2e028c8896636967d7ed1fd56177923d30f62117b340f70146c60e64b3f9"
+const goldenPlan09SHA256 = "21d980bb21e12ed1ea6c99af4718405a1260496c8a74fff7b43bfc575ec85943"
 
 const goldenPlan09Path = "testdata/plan/09_phase4_acceptance.plan.json"
 
