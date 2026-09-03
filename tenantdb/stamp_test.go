@@ -168,4 +168,3 @@ func TestStamp(t *testing.T) {
 		})
 	}
 }
-

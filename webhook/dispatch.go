@@ -24,13 +24,13 @@ import (
 
 // Default values used when a Request leaves them unset.
 const (
-	DefaultTimeout        = 30 * time.Second
-	DefaultUserAgent      = "Sentiae-Hookshot/1.0"
-	DefaultContentType    = "application/json"
-	MaxResponseBodyBytes  = 10 * 1024
-	SignatureHeader       = "X-Hub-Signature-256"
-	EventHeader           = "X-Sentiae-Event"
-	DeliveryIDHeader      = "X-Sentiae-Delivery"
+	DefaultTimeout       = 30 * time.Second
+	DefaultUserAgent     = "Sentiae-Hookshot/1.0"
+	DefaultContentType   = "application/json"
+	MaxResponseBodyBytes = 10 * 1024
+	SignatureHeader      = "X-Hub-Signature-256"
+	EventHeader          = "X-Sentiae-Event"
+	DeliveryIDHeader     = "X-Sentiae-Delivery"
 )
 
 // Request describes a single outbound webhook delivery attempt.
@@ -38,15 +38,15 @@ const (
 // Callers should leave URL/Payload required and fill the rest as needed;
 // zero values get sensible defaults (see Default* constants).
 type Request struct {
-	URL         string
-	Payload     string
-	EventType   string
-	DeliveryID  string
-	ContentType string        // "json" / "form" / explicit MIME; defaults to application/json
-	Secret      string        // HMAC-SHA256 signing key; empty skips signing
-	UserAgent   string        // defaults to DefaultUserAgent
+	URL          string
+	Payload      string
+	EventType    string
+	DeliveryID   string
+	ContentType  string            // "json" / "form" / explicit MIME; defaults to application/json
+	Secret       string            // HMAC-SHA256 signing key; empty skips signing
+	UserAgent    string            // defaults to DefaultUserAgent
 	ExtraHeaders map[string]string // merged in after the built-in headers
-	Timeout     time.Duration // defaults to DefaultTimeout
+	Timeout      time.Duration     // defaults to DefaultTimeout
 }
 
 // Response describes the outcome of a dispatch attempt.

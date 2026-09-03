@@ -51,13 +51,17 @@ func TestPropagateOutgoing_Org(t *testing.T) {
 			wantOrg: orgB.String(),
 		},
 		{
-			name:    "single claims org propagated",
-			ctx:     func() context.Context { return ContextWithPrincipal(context.Background(), userClaims(uid.String(), orgA)) },
+			name: "single claims org propagated",
+			ctx: func() context.Context {
+				return ContextWithPrincipal(context.Background(), userClaims(uid.String(), orgA))
+			},
 			wantOrg: orgA.String(),
 		},
 		{
-			name:    "multi claims org absent",
-			ctx:     func() context.Context { return ContextWithPrincipal(context.Background(), userClaims(uid.String(), orgA, orgB)) },
+			name: "multi claims org absent",
+			ctx: func() context.Context {
+				return ContextWithPrincipal(context.Background(), userClaims(uid.String(), orgA, orgB))
+			},
 			wantOrg: "",
 		},
 		{

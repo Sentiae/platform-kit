@@ -50,8 +50,8 @@ type Provider struct {
 
 // Context is passed to handlers so they can route deliveries per-org.
 type Context struct {
-	OrgID         string
-	Request       *http.Request
+	OrgID          string
+	Request        *http.Request
 	IdempotencyKey string
 }
 

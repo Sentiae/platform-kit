@@ -37,7 +37,7 @@ type ContextType string
 const (
 	ContextTypeFeature    ContextType = "feature"
 	ContextTypeSpec       ContextType = "spec"
-	ContextTypeCodeLine   ContextType = "code_line"   // ContextID = "repo:branch:path:line"
+	ContextTypeCodeLine   ContextType = "code_line" // ContextID = "repo:branch:path:line"
 	ContextTypeCanvasNode ContextType = "canvas_node"
 	ContextTypeIncident   ContextType = "incident"
 	ContextTypeDeploy     ContextType = "deploy"

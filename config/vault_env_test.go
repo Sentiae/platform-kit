@@ -15,10 +15,10 @@ func TestEnvOrFile(t *testing.T) {
 	missingPath := filepath.Join(dir, "does_not_exist")
 
 	tests := []struct {
-		name   string
-		env    string // value for the direct var ("" = unset)
-		file   string // value for the _FILE var ("" = unset)
-		want   string
+		name string
+		env  string // value for the direct var ("" = unset)
+		file string // value for the _FILE var ("" = unset)
+		want string
 	}{
 		{"direct env wins over file", "direct-value", secretPath, "direct-value"},
 		{"file used when direct empty", "", secretPath, "file-secret"},

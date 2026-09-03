@@ -38,7 +38,7 @@ func TestSelectModelID(t *testing.T) {
 
 func TestFilterTools(t *testing.T) {
 	tools := []ToolDescriptor{
-		{Name: "search.text"},                                  // unrestricted
+		{Name: "search.text"}, // unrestricted
 		{Name: "search.semantic", RequiredEntitlement: SearchSemantic},
 		{Name: "genesis.propose", RequiredEntitlement: GenesisEngine},
 	}

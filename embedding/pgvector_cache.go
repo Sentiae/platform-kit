@@ -3,12 +3,12 @@
 //
 // Schema (managed by the consuming service's migrations):
 //
-//   CREATE TABLE embedding_cache (
-//     hash      TEXT PRIMARY KEY,
-//     model     TEXT NOT NULL,
-//     vector    VECTOR(384) NOT NULL,    -- adjust dim per model
-//     last_hit  TIMESTAMPTZ NOT NULL DEFAULT now()
-//   );
+//	CREATE TABLE embedding_cache (
+//	  hash      TEXT PRIMARY KEY,
+//	  model     TEXT NOT NULL,
+//	  vector    VECTOR(384) NOT NULL,    -- adjust dim per model
+//	  last_hit  TIMESTAMPTZ NOT NULL DEFAULT now()
+//	);
 //
 // Adapters install pgvector beforehand. Phase-2 swap: switch a
 // service's `embedding.Cache` from MemoCache to PgvectorCache to

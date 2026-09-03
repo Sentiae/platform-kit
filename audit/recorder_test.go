@@ -13,9 +13,9 @@ import (
 
 // fakePublisher captures published events for assertions.
 type fakePublisher struct {
-	events  []kafka.Event
-	failOn  string
-	calls   int
+	events []kafka.Event
+	failOn string
+	calls  int
 }
 
 func (p *fakePublisher) Publish(_ context.Context, eventType string, data kafka.EventData) error {

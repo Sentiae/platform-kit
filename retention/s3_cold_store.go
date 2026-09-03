@@ -16,12 +16,12 @@ import (
 
 // S3Config wires the adapter.
 type S3Config struct {
-	Endpoint    string // e.g. "s3.amazonaws.com" or "minio.local:9000"
-	AccessKey   string
-	SecretKey   string
-	Bucket      string
-	Region      string // optional, defaults to "us-east-1"
-	UseSSL      bool
+	Endpoint  string // e.g. "s3.amazonaws.com" or "minio.local:9000"
+	AccessKey string
+	SecretKey string
+	Bucket    string
+	Region    string // optional, defaults to "us-east-1"
+	UseSSL    bool
 }
 
 // S3ColdStore is a ColdStore backed by an S3-compatible service.

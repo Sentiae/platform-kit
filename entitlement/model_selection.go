@@ -19,7 +19,7 @@ const (
 //   - eve.full                 → Sonnet
 //   - eve.basic                → Haiku
 //   - none                     → Haiku (Eve disabled at quota=0
-//                                applied separately by the caller)
+//     applied separately by the caller)
 func ModelTierForSet(s *Set) ModelTier {
 	if s == nil || s.Empty() {
 		return ModelTierHaiku

@@ -45,13 +45,13 @@ type FieldDiff struct {
 // From and To are the raw snapshot rows that were chosen by ValidFrom
 // ≤ requested ≤ ValidTo; FieldDiffs is the sorted flat diff.
 type SnapshotDiff struct {
-	Kind       string         `json:"kind"`
-	EntityID   string         `json:"entity_id"`
-	From       EntitySnapshot `json:"from"`
-	To         EntitySnapshot `json:"to"`
-	RequestedFrom time.Time   `json:"requested_from"`
-	RequestedTo   time.Time   `json:"requested_to"`
-	FieldDiffs []FieldDiff    `json:"field_diffs"`
+	Kind          string         `json:"kind"`
+	EntityID      string         `json:"entity_id"`
+	From          EntitySnapshot `json:"from"`
+	To            EntitySnapshot `json:"to"`
+	RequestedFrom time.Time      `json:"requested_from"`
+	RequestedTo   time.Time      `json:"requested_to"`
+	FieldDiffs    []FieldDiff    `json:"field_diffs"`
 }
 
 // SnapshotLoader is the narrow contract DiffSnapshots needs. The

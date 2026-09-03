@@ -5,7 +5,7 @@ package entitlement
 // the MCP layer; this is the projection we need for filtering.
 // (Paradigm Shift §I.4)
 type ToolDescriptor struct {
-	Name               string
+	Name                string
 	RequiredEntitlement Entitlement // empty = always available
 }
 

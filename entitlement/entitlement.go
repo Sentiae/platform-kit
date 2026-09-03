@@ -43,19 +43,19 @@ func (e Entitlement) String() string { return string(e) }
 // gating any endpoint with them.
 const (
 	// Repository entitlements
-	ReposPublicUnlimited                Entitlement = "repos.public.unlimited"
-	ReposPrivateUnlimited               Entitlement = "repos.private.unlimited"
-	ReposPrivateCollaboratorsMax3       Entitlement = "repos.private.collaborators_max_3"
-	ReposPrivateCollaboratorsUnlimited  Entitlement = "repos.private.collaborators_unlimited"
+	ReposPublicUnlimited               Entitlement = "repos.public.unlimited"
+	ReposPrivateUnlimited              Entitlement = "repos.private.unlimited"
+	ReposPrivateCollaboratorsMax3      Entitlement = "repos.private.collaborators_max_3"
+	ReposPrivateCollaboratorsUnlimited Entitlement = "repos.private.collaborators_unlimited"
 
 	// Search
 	SearchInverted Entitlement = "search.inverted"
 	SearchSemantic Entitlement = "search.semantic"
 
 	// Eve / LLM
-	EveBasic     Entitlement = "eve.basic"
-	EveFull      Entitlement = "eve.full"
-	EveMaxQuota  Entitlement = "eve.max_quota"
+	EveBasic    Entitlement = "eve.basic"
+	EveFull     Entitlement = "eve.full"
+	EveMaxQuota Entitlement = "eve.max_quota"
 
 	// Embeddings
 	EmbeddingsTiered Entitlement = "embeddings.tiered"
@@ -86,9 +86,9 @@ const (
 	OrgSeatBilling Entitlement = "org.seat_billing"
 
 	// Enterprise-only
-	EnterpriseFederatedRegions  Entitlement = "enterprise.federated_regions"
-	EnterpriseDedicatedSupport  Entitlement = "enterprise.dedicated_support"
-	EnterpriseUnlimitedQuotas   Entitlement = "enterprise.unlimited_quotas"
+	EnterpriseFederatedRegions Entitlement = "enterprise.federated_regions"
+	EnterpriseDedicatedSupport Entitlement = "enterprise.dedicated_support"
+	EnterpriseUnlimitedQuotas  Entitlement = "enterprise.unlimited_quotas"
 
 	// Firecracker / runtime
 	FirecrackerDedicated Entitlement = "firecracker.dedicated"

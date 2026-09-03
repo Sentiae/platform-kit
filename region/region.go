@@ -27,12 +27,12 @@ type Region string
 
 // Well-known regions — not exhaustive; callers can use any string.
 const (
-	RegionGlobal        Region = ""
-	RegionUSEast1       Region = "us-east-1"
-	RegionUSWest2       Region = "us-west-2"
-	RegionEUWest1       Region = "eu-west-1"
-	RegionEUCentral1    Region = "eu-central-1"
-	RegionAPSoutheast2  Region = "ap-southeast-2"
+	RegionGlobal       Region = ""
+	RegionUSEast1      Region = "us-east-1"
+	RegionUSWest2      Region = "us-west-2"
+	RegionEUWest1      Region = "eu-west-1"
+	RegionEUCentral1   Region = "eu-central-1"
+	RegionAPSoutheast2 Region = "ap-southeast-2"
 )
 
 // Locator maps (region, serviceName) → base URL. A static implementation

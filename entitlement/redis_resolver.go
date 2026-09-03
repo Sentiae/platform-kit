@@ -107,8 +107,8 @@ func EncodeEntsPayload(ents []string) ([]byte, error) {
 }
 
 // decodeEntsJSON tolerates two on-wire shapes:
-//   1. JSON list `["a","b"]` (legacy / minimal writer)
-//   2. EntsPayload envelope (preferred)
+//  1. JSON list `["a","b"]` (legacy / minimal writer)
+//  2. EntsPayload envelope (preferred)
 func decodeEntsJSON(raw []byte) ([]string, error) {
 	if len(raw) == 0 {
 		return nil, nil

@@ -236,7 +236,7 @@ type countingMetrics struct {
 	moved, skipped, failed int
 }
 
-func (m *countingMetrics) IncMoved()                      { m.moved++ }
-func (m *countingMetrics) IncSkipped(reason string)       { m.skipped++ }
-func (m *countingMetrics) IncFailed()                     { m.failed++ }
+func (m *countingMetrics) IncMoved()                       { m.moved++ }
+func (m *countingMetrics) IncSkipped(reason string)        { m.skipped++ }
+func (m *countingMetrics) IncFailed()                      { m.failed++ }
 func (m *countingMetrics) ObserveBatch(int, time.Duration) {}

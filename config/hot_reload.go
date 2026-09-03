@@ -25,7 +25,6 @@ import (
 //     tagged `reloadable:"true"` so secrets and pool sizes never
 //     hot-swap under live traffic.
 
-
 // HotReloader watches config files for changes and invokes a
 // callback when a modification is detected. Only safe-to-reload
 // values (feature flags, log levels, non-secret strings) should
