@@ -114,9 +114,39 @@ func write(w http.ResponseWriter, statusCode int, body Response) {
 	_ = json.NewEncoder(w).Encode(body)
 }
 
+// ensureBrokerDirSearchable is the guard on the socket's parent directory:
+// connect(2) needs SEARCH permission on every path component, so a parent that
+// denies search locks the node out even through a 0666 socket.
+//
+// It VERIFIES always and repairs only when it can, because Listen has two kinds
+// of caller and only one of them owns this directory. nodesmoke and the SDK
+// tests create it themselves, so a chmod is legal there and is the repair for a
+// narrow umask. The runtime sidecar does NOT own it: the directory is created
+// by the runtime process at uid 1000 and mounted in, and the sidecar runs
+// --user 65534:65534 --cap-drop ALL, so with CAP_FOWNER dropped it can never
+// chmod an inode it does not own. On 2026-09-03 the first secret-bearing
+// invocation ever run failed on exactly that — an unconditional chmod here
+// returned EPERM against a directory that was ALREADY 0777 — so verification is
+// the guard and the chmod is only the repair an owner can make (D-393).
+//
+// The predicate is all three search bits rather than "other": this package is
+// shared by three callers and cannot know which uid class any accessor falls
+// in, so the only invariant it may state is the class-independent one.
+func ensureBrokerDirSearchable(dir string, mode os.FileMode, chmod func(string, os.FileMode) error) error {
+	const allSearchBits = os.FileMode(0o111)
+	if mode.Perm()&allSearchBits == allSearchBits {
+		return nil
+	}
+	if err := chmod(dir, 0o755); err != nil {
+		return fmt.Errorf("broker socket dir %s: mode %04o denies search to some uid class; chmod 0755: %w",
+			dir, mode.Perm(), err)
+	}
+	return nil
+}
+
 // Listen opens the unix socket the SDKs dial. It creates the parent dir,
-// removes a stale socket file so a rerun in the same place works, and makes the
-// socket world-connectable.
+// VERIFIES that every uid class can search it, removes a stale socket file so a
+// rerun in the same place works, and makes the socket world-connectable.
 //
 // The 0666 is ON PURPOSE and is not a weakening: a unix socket is created
 // 0777 &^ umask (0755 under the usual umask) and connect(2) needs WRITE on the
@@ -133,14 +163,12 @@ func Listen(socket string) (net.Listener, error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	// The DIRECTORY's mode is as load-bearing as the socket's write bit:
-	// connect(2) needs SEARCH permission on every path component, so a 0700
-	// parent locks the node out even with a 0666 socket. MkdirAll's mode is
-	// narrowed by the umask and does nothing at all to a directory that already
-	// exists, so the invariant is ENFORCED here rather than assumed — and before
-	// Listen, so a directory we cannot open up never gets a socket in it.
-	if err := os.Chmod(dir, 0o755); err != nil {
-		return nil, fmt.Errorf("broker socket dir %s: chmod 0755: %w", dir, err)
+	info, err := os.Stat(dir)
+	if err != nil {
+		return nil, fmt.Errorf("broker socket dir %s: stat: %w", dir, err)
+	}
+	if err := ensureBrokerDirSearchable(dir, info.Mode(), os.Chmod); err != nil {
+		return nil, err
 	}
 	if err := os.Remove(socket); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err

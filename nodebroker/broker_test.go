@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -230,6 +232,136 @@ func TestListen_SocketIsWorldConnectable(t *testing.T) {
 	}
 	if got := dirInfo.Mode().Perm(); got != 0o755 {
 		t.Fatalf("socket dir mode: got %04o, want 0755 (a 0666 socket is still unreachable through it)", got)
+	}
+}
+
+// TestEnsureBrokerDirSearchable_RequiresEverySearchBitAndFailsClosed is the
+// D-393 guard. connect(2) needs SEARCH permission on every path component, and
+// this package is shared by three callers and cannot know which uid class any
+// accessor falls in — so the invariant it states is class-independent: ALL
+// THREE search bits. A directory that already satisfies it is accepted
+// untouched, because the sidecar that most needs this check is the one caller
+// that can never chmod (uid 65534, CAP_FOWNER dropped, directory owned by uid
+// 1000). A directory that does not, and cannot be repaired, gets no socket at
+// all: a broker no node can reach is worse than a refusal that names the mode.
+//
+// CONTROL (predicate): change allSearchBits from 0o111 to 0o001 — 0011, 0101,
+// 0110, 0700, 0701, 0705 and 0077 stop calling chmod and the repair rows go red.
+// CONTROL (fail-closed): return nil instead of the wrapped chmod error — every
+// repair row's errors.Is and error-text assertions go red.
+// CONTROL (diagnosis): drop the "mode %04o" clause from the format string — the
+// exact-text assertion on every repair row goes red, and an operator would be
+// left with a refusal that does not say what the mode actually was.
+func TestEnsureBrokerDirSearchable_RequiresEverySearchBitAndFailsClosed(t *testing.T) {
+	const dir = "/run/sentiae-inv"
+
+	tests := []struct {
+		name     string
+		mode     os.FileMode
+		wantMode os.FileMode // what the error must report; 0 for the accept rows
+		repair   bool
+	}{
+		{name: "0111 — search for every class and nothing else", mode: 0o111},
+		{name: "0711 — the owner also reads and writes", mode: 0o711},
+		{name: "0755", mode: 0o755},
+		{name: "0777", mode: 0o777},
+		{name: "1777 — the sticky volume root", mode: os.ModeSticky | 0o777},
+
+		{name: "0011 — the OWNER cannot search", mode: 0o011, wantMode: 0o011, repair: true},
+		{name: "0101 — the GROUP cannot search", mode: 0o101, wantMode: 0o101, repair: true},
+		{name: "0110 — OTHER cannot search", mode: 0o110, wantMode: 0o110, repair: true},
+		{name: "0700 — only the owner, and the node is not the owner", mode: 0o700, wantMode: 0o700, repair: true},
+		{name: "0701 — a matching-group accessor is locked out", mode: 0o701, wantMode: 0o701, repair: true},
+		{name: "0705 — same, with read added", mode: 0o705, wantMode: 0o705, repair: true},
+		{name: "0077 — the owner is locked out of its own directory", mode: 0o077, wantMode: 0o077, repair: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			called := 0
+			chmod := func(gotDir string, gotMode os.FileMode) error {
+				called++
+				if gotDir != dir {
+					t.Errorf("chmod path: got %q, want %q", gotDir, dir)
+				}
+				if gotMode != 0o755 {
+					t.Errorf("chmod mode: got %04o, want 0755", gotMode)
+				}
+				return syscall.EPERM
+			}
+
+			err := ensureBrokerDirSearchable(dir, tt.mode, chmod)
+
+			if !tt.repair {
+				if err != nil {
+					t.Fatalf("an already-searchable %04o was refused: %v", tt.mode.Perm(), err)
+				}
+				if called != 0 {
+					t.Fatalf("an already-searchable %04o was chmod'd %d time(s) — the sidecar cannot chmod at all",
+						tt.mode.Perm(), called)
+				}
+				return
+			}
+
+			if called != 1 {
+				t.Fatalf("chmod called %d time(s) for %04o, want exactly 1", called, tt.mode.Perm())
+			}
+			if err == nil {
+				t.Fatalf("an unrepairable %04o must fail closed, got nil", tt.mode.Perm())
+			}
+			if !errors.Is(err, syscall.EPERM) {
+				t.Fatalf("error must wrap the chmod cause: %v", err)
+			}
+			want := fmt.Sprintf(
+				"broker socket dir /run/sentiae-inv: mode %04o denies search to some uid class; chmod 0755: operation not permitted",
+				tt.wantMode)
+			if err.Error() != want {
+				t.Fatalf("refusal:\n got %q\nwant %q", err.Error(), want)
+			}
+		})
+	}
+}
+
+// TestListen_PreservesAlreadyWorldSearchableDirectoryMode is the other half of
+// D-393: the directory the runtime hands the sidecar is ALREADY 0777, owned by
+// uid 1000, and the sidecar runs as 65534 with CAP_FOWNER dropped. An
+// unconditional chmod there returns EPERM and no broker is ever published —
+// which is exactly how the first secret-bearing invocation failed live on
+// 2026-09-03. An adequate mode must therefore be left exactly as it is.
+//
+// CONTROL: restore the unconditional os.Chmod(dir, 0o755) in Listen — the
+// parent comes out 0755 and the mode assertion goes red.
+func TestListen_PreservesAlreadyWorldSearchableDirectoryMode(t *testing.T) {
+	parent := filepath.Join(shortTempDir(t), "s")
+	if err := os.MkdirAll(parent, 0o777); err != nil {
+		t.Fatalf("create socket dir: %v", err)
+	}
+	// Explicit: MkdirAll's mode is narrowed by the umask.
+	if err := os.Chmod(parent, 0o777); err != nil {
+		t.Fatalf("chmod socket dir: %v", err)
+	}
+
+	socket := filepath.Join(parent, "broker.sock")
+	lis, err := Listen(socket)
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	defer func() { _ = lis.Close() }()
+
+	dirInfo, err := os.Stat(parent)
+	if err != nil {
+		t.Fatalf("stat socket dir: %v", err)
+	}
+	if got := dirInfo.Mode().Perm(); got != 0o777 {
+		t.Fatalf("socket dir mode: got %04o, want 0777 unchanged (Listen must verify, not re-chmod)", got)
+	}
+
+	info, err := os.Stat(socket)
+	if err != nil {
+		t.Fatalf("stat socket: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o666 {
+		t.Fatalf("socket mode: got %04o, want 0666", got)
 	}
 }
 
