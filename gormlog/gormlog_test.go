@@ -2,6 +2,7 @@ package gormlog_test
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"strings"
 	"sync"
@@ -125,5 +126,39 @@ func TestNew_ConcurrentIsRaceFree(t *testing.T) {
 		if err != nil {
 			t.Fatalf("goroutine %d: New: %v", i, err)
 		}
+	}
+}
+
+// TestDiscard_ImplementsParamsFilter is the compile-time assertion in
+// discard.go restated where a reader looks for it, plus the part the assertion
+// cannot state: that the filter actually drops the values rather than handing
+// them back the way gorm's own logger does when ParameterizedQueries is unset.
+//
+// Like TestNew_AlwaysImplementsParamsFilter this is NOT the proof that nothing
+// is written — a logger can satisfy this and still print. That is
+// TestDiscard_EmitsNothing, which drives a real statement.
+func TestDiscard_ImplementsParamsFilter(t *testing.T) {
+	f, ok := gormlog.Discard.(gorm.ParamsFilter)
+	if !ok {
+		t.Fatalf("gormlog.Discard is %T, which does not implement gorm.ParamsFilter", gormlog.Discard)
+	}
+
+	const sql = "SELECT $1::text"
+	gotSQL, gotVars := f.ParamsFilter(context.Background(), sql, "sentinel")
+	if gotSQL != sql {
+		t.Errorf("ParamsFilter rewrote the statement: got %q, want %q", gotSQL, sql)
+	}
+	if gotVars != nil {
+		t.Errorf("ParamsFilter returned %v, want nil so Dialector.Explain has nothing to inline", gotVars)
+	}
+}
+
+// TestDiscard_LogModeCannotTurnItUp pins the one way a caller could otherwise
+// get output out of a discard logger: gorm calls Logger.LogMode when a Session
+// sets LogLevel, and a logger that answered with a louder version of itself
+// would start printing.
+func TestDiscard_LogModeCannotTurnItUp(t *testing.T) {
+	if got := gormlog.Discard.LogMode(gormlogger.Info); got != gormlog.Discard {
+		t.Fatalf("Discard.LogMode(Info) = %#v, want the same discard logger", got)
 	}
 }

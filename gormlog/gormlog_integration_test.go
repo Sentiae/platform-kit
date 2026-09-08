@@ -5,12 +5,15 @@ package gormlog_test
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"io"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/sentiae/platform-kit/gormlog"
 	"github.com/sentiae/platform-kit/testutil"
 	"gorm.io/gorm"
+	gormlogger "gorm.io/gorm/logger"
 )
 
 // probeRow is the destination for the finishers that return a value. The
@@ -167,4 +170,115 @@ func randomSentinel(t *testing.T) string {
 		t.Fatalf("generate sentinel: %v", err)
 	}
 	return "sentinel-" + hex.EncodeToString(b)
+}
+
+// TestDiscard_EmitsNothing proves the only thing that matters about
+// gormlog.Discard: a statement driven through it writes nothing, anywhere.
+//
+// "Anywhere" is why the sink is the process's own stdout and stderr rather
+// than a buffer. Discard holds no writer, so there is no buffer to hand it;
+// the only streams it could possibly reach are the ones it would inherit, and
+// those are what this test captures.
+//
+// The table is the point. An emptiness assertion is worthless without a
+// positive control, because a capture harness that captured nothing would pass
+// it just as happily. The first row drives the SAME statement through
+// gormlog.New pointed at the SAME captured stream and REQUIRES output; only
+// then does the second row's silence mean anything. Both rows run through one
+// code path, so the control cannot rot separately from the assertion it backs.
+func TestDiscard_EmitsNothing(t *testing.T) {
+	db := testutil.NewTestDB(t, "")
+
+	tests := []struct {
+		name string
+		// build runs inside the capture window, so a logger that takes
+		// os.Stdout takes the redirected one.
+		build     func(t *testing.T) gormlogger.Interface
+		wantEmpty bool
+	}{
+		{
+			name: "the positive control: gormlog.New writes to the captured stream",
+			build: func(t *testing.T) gormlogger.Interface {
+				l, err := gormlog.New(os.Stdout, "info")
+				if err != nil {
+					t.Fatalf("New: %v", err)
+				}
+				return l
+			},
+			wantEmpty: false,
+		},
+		{
+			name:      "gormlog.Discard writes nowhere",
+			build:     func(*testing.T) gormlogger.Interface { return gormlog.Discard },
+			wantEmpty: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			sentinel := randomSentinel(t)
+
+			var execErr error
+			out := captureStd(t, func() {
+				sess := db.Session(&gorm.Session{Logger: tt.build(t)})
+				execErr = sess.Exec("SELECT ?::text", sentinel).Error
+			})
+			if execErr != nil {
+				t.Fatalf("exec through the logger under test: %v", execErr)
+			}
+
+			if tt.wantEmpty {
+				if out != "" {
+					t.Fatalf("logger wrote %q, want nothing at all", out)
+				}
+				return
+			}
+			if !strings.Contains(out, "SQL executed") {
+				t.Fatalf("the control logger wrote no statement, so this test cannot tell silence from a broken capture; captured: %q", out)
+			}
+		})
+	}
+}
+
+// captureStd redirects os.Stdout and os.Stderr for the duration of fn and
+// returns everything written to either.
+//
+// It swaps process-wide globals, so it is deliberately not parallel and the
+// window around fn is kept to the single statement under test.
+func captureStd(t *testing.T, fn func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("open capture pipe: %v", err)
+	}
+
+	origOut, origErr := os.Stdout, os.Stderr
+	os.Stdout, os.Stderr = w, w
+
+	read := make(chan string, 1)
+	go func() {
+		b, err := io.ReadAll(r)
+		if err != nil {
+			read <- "capture read failed: " + err.Error()
+			return
+		}
+		read <- string(b)
+	}()
+
+	func() {
+		defer func() {
+			os.Stdout, os.Stderr = origOut, origErr
+			if cerr := w.Close(); cerr != nil {
+				t.Errorf("close capture pipe: %v", cerr)
+			}
+		}()
+		fn()
+	}()
+
+	out := <-read
+	if cerr := r.Close(); cerr != nil {
+		t.Errorf("close capture reader: %v", cerr)
+	}
+	return out
 }
