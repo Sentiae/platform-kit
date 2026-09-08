@@ -2,7 +2,9 @@ package gormlog_test
 
 import (
 	"bytes"
+	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/sentiae/platform-kit/gormlog"
@@ -91,5 +93,37 @@ func TestNew_AlwaysImplementsParamsFilter(t *testing.T) {
 
 	if _, ok := l.(gorm.ParamsFilter); !ok {
 		t.Fatalf("New returned %T, which does not implement gorm.ParamsFilter", l)
+	}
+}
+
+// TestNew_ConcurrentIsRaceFree pins the reason the RecorderParamsFilter
+// override is a sync.Once and not a bare assignment: New writes a
+// package-global of gorm's, and two services (or two tests) building a logger
+// at the same time would otherwise race on it. Meaningful only under -race.
+func TestNew_ConcurrentIsRaceFree(t *testing.T) {
+	const goroutines = 2
+
+	var (
+		wg    sync.WaitGroup
+		start = make(chan struct{})
+		errs  = make([]error, goroutines)
+	)
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			_, errs[i] = gormlog.New(io.Discard, "info")
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("goroutine %d: New: %v", i, err)
+		}
 	}
 }
