@@ -1,0 +1,30 @@
+flow "Hello hook" v2
+
+use hello = @acme/hello@1.0.9
+use pick_name = @acme/pick-name@1.0.0
+use respond = @sentiae/respond@1.0.0
+use webhook_trigger = @sentiae/webhook-trigger@1.0.0
+
+node intake: webhook_trigger {
+	path = "/hooks/new"
+}
+
+node pick: pick_name {
+}
+
+node greet: hello {
+}
+
+node reply: respond {
+}
+
+wire greet.out -> reply.body
+wire intake.body -> pick.body
+wire pick.name -> greet.name
+
+layout {
+	intake @ 80,120
+	pick @ 320,120
+	greet @ 560,120
+	reply @ 800,120
+}

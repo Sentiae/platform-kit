@@ -121,3 +121,78 @@ func TestToWire_NeverNull(t *testing.T) {
 		t.Fatalf("node with no collections projects as:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+const goldenPlan11Path = "testdata/plan/11_phase5_hello.plan.json"
+
+// TestGoldenPlan_11 pins the wire projection of the Phase 5 acceptance flow
+// (11_phase5_hello.flow): the flow the compiled monolith is built from. The
+// projection is what step 4+5 of CompileFlow hands the emitter, so a change in
+// scheduling, lowering or the wire shape that would silently alter generated
+// code fails here first.
+//
+// It carries no separate SHA-256 constant the way TestGoldenPlan_09 does: 09's
+// constant exists because three repositories pin those bytes independently,
+// while nothing outside platform-kit pins this projection — testdata/CORPUS.sha256
+// (and check-flow-fixtures.sh) already hash the file for every mirror.
+//
+// CONTROL: flip one `to_port` value in the golden (reply's `body` to `bodyx`)
+// and the produced-bytes comparison goes red.
+func TestGoldenPlan_11(t *testing.T) {
+	want, err := os.ReadFile(goldenPlan11Path)
+	if err != nil {
+		t.Fatalf("read golden: %v", err)
+	}
+
+	t.Run("the package still produces these bytes", func(t *testing.T) {
+		m := corpusManifests(t)
+		doc, diags := Parse(readFixture(t, filepath.Join("testdata", "11_phase5_hello.flow")))
+		if doc == nil || len(diags) != 0 {
+			t.Fatalf("Parse: doc=%v diags=%+v", doc != nil, diags)
+		}
+		plan, vdiags := Schedule(doc, m)
+		if plan == nil {
+			t.Fatalf("Schedule refused: %+v", vdiags)
+		}
+		got, err := json.MarshalIndent(ToWire(Lower(plan)), "", "  ")
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		got = append(got, '\n')
+		if string(got) != string(want) {
+			t.Fatalf("projection differs:\n--- got ---\n%s\n--- want ---\n%s", got, want)
+		}
+	})
+
+	// Go marshals a map[string]any with its keys sorted, so re-encoding the
+	// decoded document reproduces the file only if the file was already
+	// key-sorted. A file that was not would still decode fine — this is the
+	// only check that catches it.
+	t.Run("the document is key-sorted", func(t *testing.T) {
+		var generic map[string]any
+		if err := json.Unmarshal(want, &generic); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		got, err := json.MarshalIndent(generic, "", "  ")
+		if err != nil {
+			t.Fatalf("re-encode: %v", err)
+		}
+		got = append(got, '\n')
+		if string(got) != string(want) {
+			t.Fatalf("the golden is not key-sorted:\n--- re-encoded ---\n%s\n--- file ---\n%s", got, want)
+		}
+	})
+
+	// A strict decode proves the file carries exactly the declared keys, whose
+	// control is renaming one `to_port` to `toPort`.
+	t.Run("a strict decode accepts exactly the declared keys", func(t *testing.T) {
+		dec := json.NewDecoder(bytes.NewReader(want))
+		dec.DisallowUnknownFields()
+		var w WirePlan
+		if err := dec.Decode(&w); err != nil {
+			t.Fatalf("strict decode: %v", err)
+		}
+		if len(w.Nodes) != 4 || len(w.Edges) != 3 {
+			t.Fatalf("decoded %d nodes and %d edges, want 4 and 3", len(w.Nodes), len(w.Edges))
+		}
+	})
+}

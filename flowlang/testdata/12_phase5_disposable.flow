@@ -1,0 +1,30 @@
+flow "Disposable hook" v2
+
+use disposable = @acme/disposable@1.0.0
+use pick_name = @acme/pick-name@1.0.0
+use respond = @sentiae/respond@1.0.0
+use webhook_trigger = @sentiae/webhook-trigger@1.0.0
+
+node intake: webhook_trigger {
+	path = "/hooks/disposable"
+}
+
+node pick: pick_name {
+}
+
+node dispose: disposable {
+}
+
+node reply: respond {
+}
+
+wire dispose.out -> reply.body
+wire intake.body -> pick.body
+wire pick.name -> dispose.name
+
+layout {
+	intake @ 80,120
+	pick @ 320,120
+	dispose @ 560,120
+	reply @ 800,120
+}

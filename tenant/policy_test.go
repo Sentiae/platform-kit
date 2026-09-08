@@ -85,6 +85,7 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 		"spiffe://sentiae.io/svc/codegen": {
 			"/node.v1.NodeService/ResolvePins",
 			"/runtime.v1.RuntimeService/Compile",
+			"/delivery.v1.DeliveryService/Build",
 		},
 		"spiffe://sentiae.io/svc/composition": {
 			"/catalog.v1.ComponentBodyService/UpsertBodySnapshot",
@@ -103,7 +104,7 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 	}
 	wantCount := map[string]int{
 		"spiffe://sentiae.io/svc/work":        47,
-		"spiffe://sentiae.io/svc/codegen":     49,
+		"spiffe://sentiae.io/svc/codegen":     50,
 		"spiffe://sentiae.io/svc/composition": 50,
 		"spiffe://sentiae.io/svc/canvas":      54,
 	}
@@ -156,11 +157,13 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 }
 
 // TestVerificationIdentityGrantPinned pins the size of the D-226
-// verification-identity grant: one runtime read method plus the three RPCs the
+// verification-identity grant: one runtime read method, the three RPCs the
 // node-as-repository Phase 1 acceptance drive invokes with the ephemeral
-// svc/verify SVID. The grant is resident in the embedded default (not a
-// birth-time env override) because .245-class hosts receive env exactly once,
-// at image birth; this test is what keeps that resident record from widening.
+// svc/verify SVID, delivery's RunFlow (Phase 4), and the three RPCs Phase 5's
+// drive adds (codegen Scaffold + CompileFlow, git DeleteRepository). The grant
+// is resident in the embedded default (not a birth-time env override) because
+// .245-class hosts receive env exactly once, at image birth; this test is what
+// keeps that resident record from widening.
 func TestVerificationIdentityGrantPinned(t *testing.T) {
 	const svid = "spiffe://sentiae.io/svc/verify"
 	const granted = "/runtime.v1.ResourceProvisioning/GetResourceStatus"
@@ -179,8 +182,8 @@ func TestVerificationIdentityGrantPinned(t *testing.T) {
 			if !gr.CrossOrg {
 				t.Fatalf("%q must have CrossOrg", svid)
 			}
-			if len(gr.Methods) != 5 {
-				t.Fatalf("grant has %d methods, want exactly 5 (%v)", len(gr.Methods), sortedKeys(gr.Methods))
+			if len(gr.Methods) != 8 {
+				t.Fatalf("grant has %d methods, want exactly 8 (%v)", len(gr.Methods), sortedKeys(gr.Methods))
 			}
 			if _, ok := gr.Methods[granted]; !ok {
 				t.Fatalf("grant's methods are %v, want %q among them", sortedKeys(gr.Methods), granted)
@@ -359,6 +362,76 @@ func TestRegistryGrant_ResolveOnly(t *testing.T) {
 			for _, m := range denied {
 				if grants.AllowsMethod(svid, m) {
 					t.Errorf("%q must NOT allow %q", svid, m)
+				}
+			}
+		})
+	}
+}
+
+// TestFlowBuildGrantsPinned_Phase5 names, one RPC at a time, the four grants the
+// node-as-repository Phase 5 flow build adds — so that dropping any ONE of them
+// fails with that method printed, rather than only as an arithmetic count.
+//
+// codegen calls delivery's Build at DESIGN §4.2 step 9 (the compiled monolith's
+// image), and the acceptance drive's ephemeral svc/verify identity scaffolds the
+// component, compiles its flow in mode=build, and disposes of the node
+// repository through git-service's own delete path. GRANT-WHAT-YOU-CALL (D-223):
+// each denial below is a real sibling RPC on a service already reached, never
+// called on these paths.
+//
+// CONTROL (one per grant): delete that method from policy.go's grant list and
+// this test names it — "must allow …".
+func TestFlowBuildGrantsPinned_Phase5(t *testing.T) {
+	const (
+		codegen = "spiffe://sentiae.io/svc/codegen"
+		verify  = "spiffe://sentiae.io/svc/verify"
+	)
+	cases := []struct {
+		svid    string
+		granted []string
+		denied  []string
+	}{
+		{
+			svid:    codegen,
+			granted: []string{"/delivery.v1.DeliveryService/Build"},
+			denied: []string{
+				"/delivery.v1.DeliveryService/Deploy",
+				"/delivery.v1.DeliveryService/Release",
+				"/delivery.v1.DeliveryService/Retarget",
+			},
+		},
+		{
+			svid: verify,
+			granted: []string{
+				"/codegen.v1.CodegenService/Scaffold",
+				"/codegen.v1.CodegenService/CompileFlow",
+				"/git.v1.GitService/DeleteRepository",
+			},
+			denied: []string{
+				"/codegen.v1.CodegenService/Eject",
+				"/codegen.v1.CodegenService/TransitionAuthorship",
+				"/git.v1.GitService/DeleteBranch",
+			},
+		},
+	}
+
+	// LoadMeshPolicy merges APP_MESH_SERVICE_GRANTS over the embedded table, so an
+	// ambient value would decide this test instead of the code under test.
+	for name, grants := range map[string]ServiceGrants{
+		"default": DefaultMeshPolicy(),
+		"loaded":  func() ServiceGrants { t.Setenv("APP_MESH_SERVICE_GRANTS", ""); return LoadMeshPolicy() }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			for _, c := range cases {
+				for _, m := range c.granted {
+					if !grants.AllowsMethod(c.svid, m) {
+						t.Errorf("%q must allow %q", c.svid, m)
+					}
+				}
+				for _, m := range c.denied {
+					if grants.AllowsMethod(c.svid, m) {
+						t.Errorf("%q must NOT allow %q", c.svid, m)
+					}
 				}
 			}
 		})

@@ -129,10 +129,13 @@ var methodScopedCatalogReaders = map[string][]string{
 	// work reads catalog only.
 	"spiffe://sentiae.io/svc/work": withCatalogReads(),
 
-	// codegen verifies generated code by compiling it through runtime-service.
+	// codegen verifies generated code by compiling it through runtime-service,
+	// and in mode=build (node-as-repository Phase 5, DESIGN §4.2 step 9) asks
+	// delivery to build the component image from the commit it just wrote.
 	"spiffe://sentiae.io/svc/codegen": withCatalogReads(
 		"/node.v1.NodeService/ResolvePins",
 		"/runtime.v1.RuntimeService/Compile",
+		"/delivery.v1.DeliveryService/Build",
 	),
 
 	// composition writes component/work body snapshots back and reads work bodies.
@@ -190,6 +193,13 @@ var verificationIdentityGrants = map[string][]string{
 		"/node.v1.NodeService/RegisterNodeRepository",
 		"/git.v1.GitService/CreateRepository",
 		"/git.v1.FileService/GetArchive",
+		// node-as-repository Phase 5: the acceptance drive scaffolds the
+		// component, compiles its flow in mode=build, and disposes of the
+		// node repository through git-service's own delete path (revoking
+		// the tuple) rather than by removing the bare directory.
+		"/codegen.v1.CodegenService/Scaffold",
+		"/codegen.v1.CodegenService/CompileFlow",
+		"/git.v1.GitService/DeleteRepository",
 	},
 }
 

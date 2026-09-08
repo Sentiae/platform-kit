@@ -1,0 +1,70 @@
+{
+  "$defs": {
+    "Greeting": {
+      "additionalProperties": false,
+      "properties": {
+        "greeting": {
+          "type": "string"
+        },
+        "impl": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "greeting",
+        "impl"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://sentiae.com/schemas/node-manifest/v1.json",
+  "capabilities": {
+    "egress": []
+  },
+  "category": "transform",
+  "config": {
+    "additionalProperties": false,
+    "properties": {},
+    "type": "object"
+  },
+  "display": {
+    "description": "Disposable transform used only by the Phase 5 CAS deletion drill.",
+    "icon": "trash-2",
+    "name": "Disposable"
+  },
+  "implementations": {
+    "go": {
+      "entry": "go/node.go",
+      "lockfiles": [
+        "go/go.mod",
+        "go/go.sum"
+      ]
+    }
+  },
+  "inputs": [
+    {
+      "name": "name",
+      "required": true,
+      "schema": {
+        "type": "string"
+      }
+    }
+  ],
+  "name": "@acme/disposable",
+  "outputs": [
+    {
+      "name": "out",
+      "required": true,
+      "schema": {
+        "$ref": "#/$defs/Greeting"
+      }
+    }
+  ],
+  "resources": {
+    "memoryMiB": 64,
+    "timeoutMs": 5000
+  },
+  "role": null,
+  "secrets": [],
+  "shape": "inline"
+}
