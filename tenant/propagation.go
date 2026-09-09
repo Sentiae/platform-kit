@@ -232,6 +232,16 @@ func StreamClientPropagation() grpc.StreamClientInterceptor {
 // a verified JWT is present, and never hard-rejects on a missing principal (Auth
 // owns rejection — this is only reachable on auth-skipped methods).
 func inboundPropagation(ctx context.Context, fullMethod string) (context.Context, error) {
+	// Health/reflection are infrastructure plumbing, so the server honors the
+	// same skip the client interceptors do: they pass through UNSTAMPED and any
+	// asserted org is ignored rather than gated. Without this the forged-org
+	// gate runs on a transport method that is in no grant, so a strict-mode
+	// `grpcurl list` carrying an org header is denied. Nothing is given up —
+	// these methods run no SQL, so tenantdb never sees the context.
+	if skipPropagation(fullMethod) {
+		return ctx, nil
+	}
+
 	md, ok := metadata.FromIncomingContext(ctx)
 	if !ok {
 		return ctx, nil

@@ -414,3 +414,88 @@ type fakeServerStream struct {
 }
 
 func (f fakeServerStream) Context() context.Context { return f.ctx }
+
+// TestInboundPropagation_SkipsInfraMethods is the D-411 guard: the SERVER
+// interceptors must apply the same skipPropagation the client interceptors
+// declare, so gRPC reflection and health never carry tenant identity. It is
+// driven under the exact production shape that broke — strict SVID authz plus a
+// METHOD-SCOPED grant, with an org header present — where reaching Rule 5 with
+// the reflection full-method is a guaranteed PermissionDenied because no grant
+// names a transport method.
+//
+// The reflection row deliberately uses the v1alpha package to prove the
+// "/grpc.reflection." PREFIX match rather than an exact string, and reflection
+// is driven through the STREAM interceptor too because ServerReflectionInfo is
+// a bidi stream — that is the path `grpcurl list` actually takes.
+//
+// The last two rows are the over-broadness control in the other direction: a
+// business RPC with an org header must still reach Rule 5 and be stamped when
+// granted / denied when not, exactly as before.
+func TestInboundPropagation_SkipsInfraMethods(t *testing.T) {
+	const svid = "spiffe://sentiae.io/svc/codegen"
+	const grantedMethod = "/work.v1.TaskService/CreateTask"
+	const ungrantedMethod = "/work.v1.TaskService/DeleteTask"
+
+	prevGrants := defaultServiceGrants
+	SetServiceGrants(NewServiceGrants(map[string]ServiceGrant{
+		svid: {CrossOrg: true, Methods: map[string]struct{}{grantedMethod: {}}},
+	}))
+	t.Cleanup(func() { SetServiceGrants(prevGrants) })
+	prevStrict := meshSVIDAuthzStrict
+	SetMeshSVIDAuthzStrict(true)
+	t.Cleanup(func() { SetMeshSVIDAuthzStrict(prevStrict) })
+
+	cases := []struct {
+		name        string
+		method      string
+		wantCode    codes.Code
+		wantStamped bool
+	}{
+		{"reflection v1alpha passes unstamped", "/grpc.reflection.v1alpha.ServerReflection/ServerReflectionInfo", codes.OK, false},
+		{"reflection v1 passes unstamped", "/grpc.reflection.v1.ServerReflection/ServerReflectionInfo", codes.OK, false},
+		{"health check passes unstamped", "/grpc.health.v1.Health/Check", codes.OK, false},
+		{"granted business method still stamped", grantedMethod, codes.OK, true},
+		{"ungranted business method still denied", ungrantedMethod, codes.PermissionDenied, false},
+	}
+
+	for _, tc := range cases {
+		// The server-owned full-method is what CanActInOrg checks (Principal.Method
+		// comes from grpc.Method(ctx) in production).
+		p := Principal{ServiceSVID: svid, Method: tc.method}
+		md := metadata.Pairs(MDOrganizationID, orgA.String())
+
+		t.Run("unary/"+tc.name, func(t *testing.T) {
+			ctx := metadata.NewIncomingContext(ContextWithPrincipal(context.Background(), p), md)
+			var stamped bool
+			_, err := UnaryInboundPropagation()(ctx, nil,
+				&grpc.UnaryServerInfo{FullMethod: tc.method},
+				func(hctx context.Context, _ any) (any, error) {
+					_, stamped = ActiveOrgFromContext(hctx)
+					return nil, nil
+				})
+			if status.Code(err) != tc.wantCode {
+				t.Fatalf("code = %v (err=%v), want %v", status.Code(err), err, tc.wantCode)
+			}
+			if stamped != tc.wantStamped {
+				t.Fatalf("active org stamped = %v, want %v", stamped, tc.wantStamped)
+			}
+		})
+
+		t.Run("stream/"+tc.name, func(t *testing.T) {
+			ctx := metadata.NewIncomingContext(ContextWithPrincipal(context.Background(), p), md)
+			var stamped bool
+			err := StreamInboundPropagation()(nil, fakeServerStream{ctx: ctx},
+				&grpc.StreamServerInfo{FullMethod: tc.method},
+				func(_ any, ss grpc.ServerStream) error {
+					_, stamped = ActiveOrgFromContext(ss.Context())
+					return nil
+				})
+			if status.Code(err) != tc.wantCode {
+				t.Fatalf("code = %v (err=%v), want %v", status.Code(err), err, tc.wantCode)
+			}
+			if stamped != tc.wantStamped {
+				t.Fatalf("active org stamped = %v, want %v", stamped, tc.wantStamped)
+			}
+		})
+	}
+}
