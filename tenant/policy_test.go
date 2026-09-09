@@ -86,6 +86,12 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 			"/node.v1.NodeService/ResolvePins",
 			"/runtime.v1.RuntimeService/Compile",
 			"/delivery.v1.DeliveryService/Build",
+			"/git.v1.GitService/GetRepositoryByOwnerAndName",
+			"/git.v1.GitService/CreateRepository",
+			"/git.v1.GitService/GetBranch",
+			"/git.v1.FileService/CommitFiles",
+			"/git.v1.FileService/ReadFile",
+			"/git.v1.FileService/ListFiles",
 		},
 		"spiffe://sentiae.io/svc/composition": {
 			"/catalog.v1.ComponentBodyService/UpsertBodySnapshot",
@@ -104,7 +110,7 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 	}
 	wantCount := map[string]int{
 		"spiffe://sentiae.io/svc/work":        47,
-		"spiffe://sentiae.io/svc/codegen":     50,
+		"spiffe://sentiae.io/svc/codegen":     56,
 		"spiffe://sentiae.io/svc/composition": 50,
 		"spiffe://sentiae.io/svc/canvas":      54,
 	}
@@ -436,4 +442,117 @@ func TestFlowBuildGrantsPinned_Phase5(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestCodegenGitGrantsPinned_D412 pins the six git RPCs codegen's git gateway
+// invokes on the Scaffold / TransitionAuthorship / CompileFlow paths, and pins
+// the sibling git RPCs it does NOT call as denied (GRANT-WHAT-YOU-CALL, D-223).
+//
+// It drives the REAL enforcement path — Principal.CanActInOrg, which is what
+// git-service's inbound propagation check calls — not ServiceGrants.AllowsMethod
+// alone. That matters because CanActInOrg returns true at principal.go:139 for
+// ANY peer SVID while meshSVIDAuthzStrict is false, which is the package default
+// in unit tests: a version of this test that forgot to set strict mode would
+// pass on every method, granted or not, and prove nothing. Strict is therefore
+// set explicitly and restored via t.Cleanup.
+//
+// CONTROL (one per grant): delete a method from policy.go's codegen entry and
+// this test names it — "must allow …".
+func TestCodegenGitGrantsPinned_D412(t *testing.T) {
+	const codegen = "spiffe://sentiae.io/svc/codegen"
+
+	granted := []string{
+		"/git.v1.GitService/GetRepositoryByOwnerAndName",
+		"/git.v1.GitService/CreateRepository",
+		"/git.v1.GitService/GetBranch",
+		"/git.v1.FileService/CommitFiles",
+		"/git.v1.FileService/ReadFile",
+		"/git.v1.FileService/ListFiles",
+	}
+	// Sibling git RPCs codegen's code never invokes.
+	denied := []string{
+		"/git.v1.GitService/DeleteRepository",
+		"/git.v1.GitService/CreateTag",
+		"/git.v1.GitService/DeleteBranch",
+		"/git.v1.FileService/GetArchive",
+	}
+
+	// LoadMeshPolicy merges APP_MESH_SERVICE_GRANTS over the embedded table, so an
+	// ambient value would decide this test instead of the code under test.
+	for name, grants := range map[string]ServiceGrants{
+		"default": DefaultMeshPolicy(),
+		"loaded":  func() ServiceGrants { t.Setenv("APP_MESH_SERVICE_GRANTS", ""); return LoadMeshPolicy() }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			prevGrants := defaultServiceGrants
+			SetServiceGrants(grants)
+			t.Cleanup(func() { SetServiceGrants(prevGrants) })
+
+			prevStrict := meshSVIDAuthzStrict
+			SetMeshSVIDAuthzStrict(true)
+			t.Cleanup(func() { SetMeshSVIDAuthzStrict(prevStrict) })
+
+			// Headless caller: no user claims, exactly as codegen->git runs.
+			call := func(method string) bool {
+				return Principal{ServiceSVID: codegen, Method: method}.CanActInOrg(orgA)
+			}
+			for _, m := range granted {
+				if !call(m) {
+					t.Errorf("%q must allow %q", codegen, m)
+				}
+			}
+			for _, m := range denied {
+				if call(m) {
+					t.Errorf("%q must NOT allow %q", codegen, m)
+				}
+			}
+		})
+	}
+}
+
+// TestGrantSourcesDisjoint guards the silent-skip hazard in the grant merge
+// (D-412 residual, entailed per D-295). Every add*Grants helper skips an SVID
+// already present in the map — `if _, exists := m[svid]; exists { continue }` —
+// so a second source naming an SVID a earlier source already populated
+// contributes NOTHING, with every existing test still green. That is a guard
+// that cannot fail unless it is written: this is it.
+//
+// CONTROL: add any SVID below to a second source and this test names both.
+func TestGrantSourcesDisjoint(t *testing.T) {
+	// Merge order in DefaultMeshPolicy / LoadMeshPolicy. A later source is the
+	// one silently skipped, so the order is part of what is being pinned.
+	sources := []struct {
+		name  string
+		svids []string
+	}{
+		{"crossOrgMeshServices", crossOrgMeshServices},
+		{"methodScopedCatalogReaders", sortedMapKeys(methodScopedCatalogReaders)},
+		{"verificationIdentityGrants", sortedMapKeys(verificationIdentityGrants)},
+		{"nodeRegistryGrants", sortedMapKeys(nodeRegistryGrants)},
+		{"registryGrants", sortedMapKeys(registryGrants)},
+	}
+
+	owner := make(map[string]string)
+	for _, src := range sources {
+		for _, svid := range src.svids {
+			if prev, dup := owner[svid]; dup {
+				t.Errorf("%q is populated by %q and again by %q; the later source is "+
+					"silently skipped by the add*Grants exists-check and grants nothing",
+					svid, prev, src.name)
+				continue
+			}
+			owner[svid] = src.name
+		}
+	}
+}
+
+// sortedMapKeys returns the keys of a grant source map in a deterministic order
+// so a duplicate is always reported against the same owning source.
+func sortedMapKeys(m map[string][]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

@@ -117,7 +117,8 @@ func withCatalogReads(extra ...string) []string {
 // claimed these readers "never reach any other service"; that was false in code
 // — three of the four do, and the calls are now named below:
 //
-//   - codegen     → runtime-service (compile verification)
+//   - codegen     → runtime-service (compile verification), node/delivery, and
+//     git-service (the node repository it scaffolds and commits into)
 //   - composition → catalog + work body snapshots
 //   - canvas      → runtime-service graph lifecycle + node-service registry read
 //
@@ -132,10 +133,26 @@ var methodScopedCatalogReaders = map[string][]string{
 	// codegen verifies generated code by compiling it through runtime-service,
 	// and in mode=build (node-as-repository Phase 5, DESIGN §4.2 step 9) asks
 	// delivery to build the component image from the commit it just wrote.
+	//
+	// The git RPCs (D-412) are the ones codegen's git gateway invokes to own the
+	// node repository across Scaffold, TransitionAuthorship and CompileFlow:
+	// resolve-or-create the repo, read its branch head, then read/list/commit
+	// files on it. GetBranch is unconditional on every ScaffoldPersist.Prepare
+	// and ListFiles runs once a manifest exists, so a set narrowed to the
+	// fresh-repo path would pass the first scaffold and fail the first
+	// idempotent re-scaffold. Deliberately NOT granted, because codegen calls
+	// none of them: DeleteRepository, CreateTag, GetTag, DeleteBranch,
+	// GetArchive.
 	"spiffe://sentiae.io/svc/codegen": withCatalogReads(
 		"/node.v1.NodeService/ResolvePins",
 		"/runtime.v1.RuntimeService/Compile",
 		"/delivery.v1.DeliveryService/Build",
+		"/git.v1.GitService/GetRepositoryByOwnerAndName",
+		"/git.v1.GitService/CreateRepository",
+		"/git.v1.GitService/GetBranch",
+		"/git.v1.FileService/CommitFiles",
+		"/git.v1.FileService/ReadFile",
+		"/git.v1.FileService/ListFiles",
 	),
 
 	// composition writes component/work body snapshots back and reads work bodies.
