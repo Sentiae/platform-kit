@@ -127,7 +127,11 @@ func withCatalogReads(extra ...string) []string {
 // what the caller calls, never what the callee happens to check today, so that
 // hardening a callee never breaks an audited caller.
 var methodScopedCatalogReaders = map[string][]string{
-	// work reads catalog only.
+	// work's GRANT is the catalog read base only. Whether work's code calls
+	// beyond catalog is UNAUDITED — a heuristic pass during D-412 flagged ~26
+	// candidate calls on git/identity/ops/composition/foundry, none established
+	// as live. Do not read this line as "work calls catalog only"; that is the
+	// exact misreading that hid D-412. Owner: #mesh-grant-audit-caller-vs-table.
 	"spiffe://sentiae.io/svc/work": withCatalogReads(),
 
 	// codegen verifies generated code by compiling it through runtime-service,
