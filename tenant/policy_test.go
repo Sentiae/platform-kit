@@ -106,13 +106,14 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 			"/runtime.v1.GraphService/CancelGraphExecution",
 			"/runtime.v1.GraphService/ListNodeExecutions",
 			"/node.v1.NodeService/ListNodes",
+			"/catalog.v1.ComponentCatalogService/BindComponentRepo",
 		},
 	}
 	wantCount := map[string]int{
 		"spiffe://sentiae.io/svc/work":        47,
 		"spiffe://sentiae.io/svc/codegen":     56,
 		"spiffe://sentiae.io/svc/composition": 50,
-		"spiffe://sentiae.io/svc/canvas":      54,
+		"spiffe://sentiae.io/svc/canvas":      55,
 	}
 
 	g := DefaultMeshPolicy()
@@ -165,8 +166,9 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 // TestVerificationIdentityGrantPinned pins the size of the D-226
 // verification-identity grant: one runtime read method, the three RPCs the
 // node-as-repository Phase 1 acceptance drive invokes with the ephemeral
-// svc/verify SVID, delivery's RunFlow (Phase 4), and the three RPCs Phase 5's
-// drive adds (codegen Scaffold + CompileFlow, git DeleteRepository). The grant
+// svc/verify SVID, delivery's RunFlow (Phase 4), the three RPCs Phase 5's
+// drive adds (codegen Scaffold + CompileFlow, git DeleteRepository), and the
+// two node reads P6-S2's isolation probes make (GetNode, ListNodes). The grant
 // is resident in the embedded default (not a birth-time env override) because
 // .245-class hosts receive env exactly once, at image birth; this test is what
 // keeps that resident record from widening.
@@ -188,8 +190,8 @@ func TestVerificationIdentityGrantPinned(t *testing.T) {
 			if !gr.CrossOrg {
 				t.Fatalf("%q must have CrossOrg", svid)
 			}
-			if len(gr.Methods) != 8 {
-				t.Fatalf("grant has %d methods, want exactly 8 (%v)", len(gr.Methods), sortedKeys(gr.Methods))
+			if len(gr.Methods) != 10 {
+				t.Fatalf("grant has %d methods, want exactly 10 (%v)", len(gr.Methods), sortedKeys(gr.Methods))
 			}
 			if _, ok := gr.Methods[granted]; !ok {
 				t.Fatalf("grant's methods are %v, want %q among them", sortedKeys(gr.Methods), granted)
@@ -234,8 +236,10 @@ func TestMethodScopedReadersNotBlanket(t *testing.T) {
 }
 
 // TestNodeRegistryGrantPinned pins the node-as-repository Phase 1 mesh grant:
-// svc/node acts cross-org over exactly the eight git-service RPCs its git
-// gateway invokes (GRANT-WHAT-YOU-CALL, D-223) and nothing else. Control:
+// svc/node acts cross-org over exactly the nine RPCs it invokes: the eight
+// git-service RPCs its git gateway calls plus the one identity resolution its
+// P6-S2 ownership derivation makes (GRANT-WHAT-YOU-CALL, D-223), and nothing
+// else. Control:
 // delete "/git.v1.FileService/GetArchive" from nodeRegistryGrants → red.
 func TestNodeRegistryGrantPinned(t *testing.T) {
 	const svid = "spiffe://sentiae.io/svc/node"
@@ -248,6 +252,7 @@ func TestNodeRegistryGrantPinned(t *testing.T) {
 		"/git.v1.FileService/ReadFile",
 		"/git.v1.FileService/ListFiles",
 		"/git.v1.FileService/GetArchive",
+		"/identity.v1.OrganizationService/GetOrganizationBySlug",
 	}
 
 	// LoadMeshPolicy merges APP_MESH_SERVICE_GRANTS over the embedded table, so an
@@ -292,6 +297,8 @@ func TestVerificationIdentityGrantPinned_Phase1(t *testing.T) {
 		"/node.v1.NodeService/RegisterNodeRepository",
 		"/git.v1.GitService/CreateRepository",
 		"/git.v1.FileService/GetArchive",
+		"/node.v1.NodeService/GetNode",
+		"/node.v1.NodeService/ListNodes",
 	}
 	denied := []string{
 		"/node.v1.NodeService/InstallNode",

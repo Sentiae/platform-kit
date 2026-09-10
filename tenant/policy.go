@@ -180,6 +180,10 @@ var methodScopedCatalogReaders = map[string][]string{
 		"/runtime.v1.GraphService/CancelGraphExecution",
 		"/runtime.v1.GraphService/ListNodeExecutions",
 		"/node.v1.NodeService/ListNodes",
+		// D-423 (c): canvas binds the flows repository in catalog before it
+		// writes a placement, so UpdateFlowPlacement never lands a flow whose
+		// repository the component does not yet own.
+		"/catalog.v1.ComponentCatalogService/BindComponentRepo",
 	),
 }
 
@@ -221,6 +225,9 @@ var verificationIdentityGrants = map[string][]string{
 		"/codegen.v1.CodegenService/Scaffold",
 		"/codegen.v1.CodegenService/CompileFlow",
 		"/git.v1.GitService/DeleteRepository",
+		// P6-S2 acceptance: the isolation probes read a node as two organizations.
+		"/node.v1.NodeService/GetNode",
+		"/node.v1.NodeService/ListNodes",
 	},
 }
 
@@ -241,7 +248,10 @@ func addVerificationIdentityGrants(m map[string]ServiceGrant) {
 
 // nodeRegistryGrants (node-as-repository Phase 1, D-384): node-service registers
 // node repositories and ingests version tags through git-service. GRANT-WHAT-YOU-
-// CALL (D-223): exactly the RPCs node-service's git gateway invokes.
+// CALL (D-223): the eight git-service RPCs its git gateway invokes plus the ONE
+// identity resolution its ownership derivation makes (P6-S2: a node's owner is
+// the organization whose slug is its scope, resolved server-side, never
+// asserted).
 var nodeRegistryGrants = map[string][]string{
 	"spiffe://sentiae.io/svc/node": {
 		"/git.v1.GitService/GetRepositoryByOwnerAndName",
@@ -252,6 +262,7 @@ var nodeRegistryGrants = map[string][]string{
 		"/git.v1.FileService/ReadFile",
 		"/git.v1.FileService/ListFiles",
 		"/git.v1.FileService/GetArchive",
+		"/identity.v1.OrganizationService/GetOrganizationBySlug",
 	},
 }
 
