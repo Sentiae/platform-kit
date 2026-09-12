@@ -120,7 +120,9 @@ func withCatalogReads(extra ...string) []string {
 //   - codegen     → runtime-service (compile verification), node/delivery, and
 //     git-service (the node repository it scaffolds and commits into)
 //   - composition → catalog + work body snapshots
-//   - canvas      → runtime-service graph lifecycle + node-service registry read
+//   - canvas      → runtime-service graph lifecycle, node-service registry read,
+//     catalog BindComponentRepo (D-423), and codegen ScaffoldPreviewFromGraph
+//     (D-491 D8)
 //
 // Governing principle (D-223, GRANT-WHAT-YOU-CALL): a restricted identity's
 // method set is the audited list of RPCs its code invokes on live paths — grant
