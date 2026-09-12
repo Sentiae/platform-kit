@@ -107,13 +107,14 @@ func TestMethodScopedReaderGrantDrift(t *testing.T) {
 			"/runtime.v1.GraphService/ListNodeExecutions",
 			"/node.v1.NodeService/ListNodes",
 			"/catalog.v1.ComponentCatalogService/BindComponentRepo",
+			"/codegen.v1.CodegenService/ScaffoldPreviewFromGraph",
 		},
 	}
 	wantCount := map[string]int{
 		"spiffe://sentiae.io/svc/work":        47,
 		"spiffe://sentiae.io/svc/codegen":     56,
 		"spiffe://sentiae.io/svc/composition": 50,
-		"spiffe://sentiae.io/svc/canvas":      55,
+		"spiffe://sentiae.io/svc/canvas":      56,
 	}
 
 	g := DefaultMeshPolicy()
@@ -562,4 +563,77 @@ func sortedMapKeys(m map[string][]string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// TestCanvasScaffoldPreviewFromGraphGrant_D491 locks the D-491 D8 grant: canvas
+// stamps the canvas's server-resolved org and calls codegen's
+// ScaffoldPreviewFromGraph (the D-072 by-ID rule), so canvas's method-scoped
+// grant names exactly that one codegen RPC. Every other codegen RPC stays denied
+// to canvas, the grant does not leak to another restricted SVID, and canvas's
+// existing grants are unchanged.
+//
+// It drives the REAL enforcement path — Principal.CanActInOrg, which codegen's
+// inbound propagation check calls — with strict mode set explicitly, for the
+// reason given on TestCodegenGitGrantsPinned_D412: without it CanActInOrg
+// allows any peer SVID and this test would prove nothing.
+//
+// CONTROL: delete "/codegen.v1.CodegenService/ScaffoldPreviewFromGraph" from
+// policy.go's canvas entry and this test names it — "must allow …".
+func TestCanvasScaffoldPreviewFromGraphGrant_D491(t *testing.T) {
+	const (
+		canvas  = "spiffe://sentiae.io/svc/canvas"
+		verify  = "spiffe://sentiae.io/svc/verify"
+		preview = "/codegen.v1.CodegenService/ScaffoldPreviewFromGraph"
+	)
+	cases := []struct {
+		name   string
+		svid   string
+		method string
+		allow  bool
+	}{
+		{"canvas may call ScaffoldPreviewFromGraph", canvas, preview, true},
+		// Every other RPC on codegen.v1.CodegenService stays denied to canvas.
+		{"canvas denied Scaffold", canvas, "/codegen.v1.CodegenService/Scaffold", false},
+		{"canvas denied FillBodies", canvas, "/codegen.v1.CodegenService/FillBodies", false},
+		{"canvas denied Sync", canvas, "/codegen.v1.CodegenService/Sync", false},
+		{"canvas denied Eject", canvas, "/codegen.v1.CodegenService/Eject", false},
+		{"canvas denied TransitionAuthorship", canvas, "/codegen.v1.CodegenService/TransitionAuthorship", false},
+		{"canvas denied ScaffoldPreview", canvas, "/codegen.v1.CodegenService/ScaffoldPreview", false},
+		{"canvas denied CompileFlow", canvas, "/codegen.v1.CodegenService/CompileFlow", false},
+		// svc/verify holds codegen grants (Scaffold, CompileFlow) but not this
+		// one: the denial is method-level, not an absent org grant.
+		{"verify denied ScaffoldPreviewFromGraph", verify, preview, false},
+		{"canvas keeps ListNodes", canvas, "/node.v1.NodeService/ListNodes", true},
+	}
+
+	// LoadMeshPolicy merges APP_MESH_SERVICE_GRANTS over the embedded table, so an
+	// ambient value would decide this test instead of the code under test.
+	for name, grants := range map[string]ServiceGrants{
+		"default": DefaultMeshPolicy(),
+		"loaded":  func() ServiceGrants { t.Setenv("APP_MESH_SERVICE_GRANTS", ""); return LoadMeshPolicy() }(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			prevGrants := defaultServiceGrants
+			SetServiceGrants(grants)
+			t.Cleanup(func() { SetServiceGrants(prevGrants) })
+
+			prevStrict := meshSVIDAuthzStrict
+			SetMeshSVIDAuthzStrict(true)
+			t.Cleanup(func() { SetMeshSVIDAuthzStrict(prevStrict) })
+
+			for _, c := range cases {
+				t.Run(c.name, func(t *testing.T) {
+					// Headless caller: no user claims, exactly as canvas->codegen runs.
+					got := Principal{ServiceSVID: c.svid, Method: c.method}.CanActInOrg(orgA)
+					if got != c.allow {
+						if c.allow {
+							t.Errorf("%q must allow %q", c.svid, c.method)
+						} else {
+							t.Errorf("%q must NOT allow %q", c.svid, c.method)
+						}
+					}
+				})
+			}
+		})
+	}
 }

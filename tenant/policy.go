@@ -184,6 +184,9 @@ var methodScopedCatalogReaders = map[string][]string{
 		// writes a placement, so UpdateFlowPlacement never lands a flow whose
 		// repository the component does not yet own.
 		"/catalog.v1.ComponentCatalogService/BindComponentRepo",
+		// D-491 D8: canvas previews generated code for a canvas whose org it
+		// resolved server-side (D-072 by-ID) and propagates that org to codegen.
+		"/codegen.v1.CodegenService/ScaffoldPreviewFromGraph",
 	),
 }
 
