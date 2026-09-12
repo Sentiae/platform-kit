@@ -10,7 +10,9 @@ import (
 type CORSConfig struct {
 	// AllowedOrigins is a list of origins allowed to make cross-origin requests.
 	// Supports exact matches and wildcard patterns (e.g. "https://*.example.com").
-	// An empty list rejects all cross-origin requests.
+	// An empty list rejects all cross-origin requests. Any entry containing '*'
+	// is a wildcard pattern, and wildcard patterns are ignored when
+	// AllowCredentials is set: see AllowCredentials.
 	AllowedOrigins []string
 
 	// AllowedMethods is the list of HTTP methods allowed for cross-origin requests.
@@ -25,6 +27,9 @@ type CORSConfig struct {
 	ExposedHeaders []string
 
 	// AllowCredentials indicates whether cookies and auth headers are included.
+	// When set, only exact AllowedOrigins entries match: reflecting an origin
+	// that matched a wildcard (bare "*" included) with credentials would let any
+	// matching site read credentialed responses, so wildcard entries never match.
 	AllowCredentials bool
 
 	// MaxAge is the preflight cache duration in seconds.
@@ -48,6 +53,16 @@ func CORS(cfg CORSConfig) func(http.Handler) http.Handler {
 	exposedStr := strings.Join(cfg.ExposedHeaders, ", ")
 	maxAgeStr := strconv.Itoa(cfg.MaxAge)
 
+	origins := cfg.AllowedOrigins
+	if cfg.AllowCredentials {
+		origins = make([]string, 0, len(cfg.AllowedOrigins))
+		for _, o := range cfg.AllowedOrigins {
+			if !strings.Contains(o, "*") {
+				origins = append(origins, o)
+			}
+		}
+	}
+
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
@@ -56,7 +71,7 @@ func CORS(cfg CORSConfig) func(http.Handler) http.Handler {
 				return
 			}
 
-			if !matchAnyOrigin(cfg.AllowedOrigins, origin) {
+			if !matchAnyOrigin(origins, origin) {
 				next.ServeHTTP(w, r)
 				return
 			}

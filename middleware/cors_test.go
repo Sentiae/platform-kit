@@ -153,3 +153,98 @@ func TestMatchOrigin(t *testing.T) {
 		}
 	}
 }
+
+// TestCORS_CredentialedWildcardNeverReflects locks the credentialed-wildcard
+// rule: with AllowCredentials, a pattern containing '*' (bare "*" or a pattern
+// such as "https://*.example.com") never matches, so no origin is reflected
+// with credentials through it. Exact origins still reflect with credentials,
+// and a non-credentialed "*" still reflects as before.
+//
+// CONTROL: drop the credentialed-wildcard filter in CORS and the "credentialed"
+// wildcard rows fail with an ACAO/ACAC present.
+func TestCORS_CredentialedWildcardNeverReflects(t *testing.T) {
+	tests := []struct {
+		name          string
+		cfg           CORSConfig
+		origin        string
+		preflight     bool
+		wantOrigin    string
+		wantCreds     string
+		wantPreflight bool
+	}{
+		{
+			name:   "credentialed bare * does not reflect evil origin",
+			cfg:    CORSConfig{AllowedOrigins: []string{"*"}, AllowCredentials: true},
+			origin: "https://evil.example",
+		},
+		{
+			name:      "credentialed bare * does not answer evil preflight",
+			cfg:       CORSConfig{AllowedOrigins: []string{"*"}, AllowCredentials: true},
+			origin:    "https://evil.example",
+			preflight: true,
+		},
+		{
+			name:   "credentialed bare * does not match a literal * origin",
+			cfg:    CORSConfig{AllowedOrigins: []string{"*"}, AllowCredentials: true},
+			origin: "*",
+		},
+		{
+			name:   "credentialed subdomain pattern does not reflect",
+			cfg:    CORSConfig{AllowedOrigins: []string{"https://*.example.com"}, AllowCredentials: true},
+			origin: "https://app.example.com",
+		},
+		{
+			name:       "credentialed exact origin reflects with credentials",
+			cfg:        CORSConfig{AllowedOrigins: []string{"https://app.example.com"}, AllowCredentials: true},
+			origin:     "https://app.example.com",
+			wantOrigin: "https://app.example.com",
+			wantCreds:  "true",
+		},
+		{
+			name:          "credentialed exact origin beside a * still reflects on preflight",
+			cfg:           CORSConfig{AllowedOrigins: []string{"*", "https://app.example.com"}, AllowCredentials: true},
+			origin:        "https://app.example.com",
+			preflight:     true,
+			wantOrigin:    "https://app.example.com",
+			wantCreds:     "true",
+			wantPreflight: true,
+		},
+		{
+			name:       "non-credentialed bare * still reflects",
+			cfg:        CORSConfig{AllowedOrigins: []string{"*"}},
+			origin:     "https://evil.example",
+			wantOrigin: "https://evil.example",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			method := http.MethodGet
+			if tt.preflight {
+				method = http.MethodOptions
+			}
+			req := httptest.NewRequest(method, "/api/data", nil)
+			req.Header.Set("Origin", tt.origin)
+			if tt.preflight {
+				req.Header.Set("Access-Control-Request-Method", "POST")
+			}
+
+			rr := httptest.NewRecorder()
+			newCORSHandler(tt.cfg).ServeHTTP(rr, req)
+
+			if got := rr.Header().Get("Access-Control-Allow-Origin"); got != tt.wantOrigin {
+				t.Errorf("Access-Control-Allow-Origin = %q, want %q", got, tt.wantOrigin)
+			}
+			if got := rr.Header().Get("Access-Control-Allow-Credentials"); got != tt.wantCreds {
+				t.Errorf("Access-Control-Allow-Credentials = %q, want %q", got, tt.wantCreds)
+			}
+			wantCode := http.StatusOK
+			if tt.wantPreflight {
+				wantCode = http.StatusNoContent
+			}
+			if rr.Code != wantCode {
+				t.Errorf("status = %d, want %d", rr.Code, wantCode)
+			}
+		})
+	}
+}
