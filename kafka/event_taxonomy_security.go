@@ -91,11 +91,11 @@ func init() {
 			Description: "A security finding blew through its remediation SLA",
 			Owner:       "vigil-service",
 			Schema: dataSchema("security.finding.sla_breach",
-				[]string{"finding_id"},
+				[]string{"finding_id", "sla_deadline"},
 				`"finding_id":{"type":"string","minLength":1},`+
 					`"severity":{"type":"string"},`+
 					`"days_overdue":{"type":"integer"},`+
-					`"sla_deadline":{"type":"string"},`+
+					`"sla_deadline":{"type":"string","minLength":1},`+
 					`"title":{"type":"string"}`),
 		},
 		{

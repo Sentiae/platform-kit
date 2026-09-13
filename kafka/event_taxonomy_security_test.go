@@ -1,6 +1,7 @@
 package kafka
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -176,5 +177,58 @@ func TestUnpublishedSecurityTypes_StayUnregistered(t *testing.T) {
 		if _, ok := LookupEvent(typ); ok {
 			t.Errorf("event %q is registered but has no publisher", typ)
 		}
+	}
+}
+
+// TestSecurityFindingSLABreach_MetadataContract pins the SLA-breach metadata
+// contract: a breach is identified by (finding_id, sla_deadline), so both are
+// required and non-empty (D-512 R9). Each rejection asserts the exact reason,
+// so a payload rejected for an unrelated field cannot satisfy a case.
+func TestSecurityFindingSLABreach_MetadataContract(t *testing.T) {
+	slaBreach := func(mutate func(m map[string]any)) EventData {
+		m := map[string]any{
+			"finding_id":   "7d1e0a52-3c4b-4e5f-8a9b-0c1d2e3f4a5b",
+			"severity":     "critical",
+			"days_overdue": 3,
+			"sla_deadline": "2026-09-10T12:00:00Z",
+			"title":        "SQL injection",
+		}
+		mutate(m)
+		return EventData{
+			ActorType:      "system",
+			ResourceType:   "finding",
+			ResourceID:     "7d1e0a52-3c4b-4e5f-8a9b-0c1d2e3f4a5b",
+			OrganizationID: "8f1d3c1e-1a2b-4c3d-9e8f-7a6b5c4d3e2f",
+			Timestamp:      time.Now().UTC(),
+			Metadata:       m,
+		}
+	}
+	tests := []struct {
+		name       string
+		mutate     func(m map[string]any)
+		wantReason string // "" = must validate
+	}{
+		{"well-formed with finding_id and sla_deadline", func(map[string]any) {}, ""},
+		{"missing sla_deadline", func(m map[string]any) { delete(m, "sla_deadline") }, "metadata.sla_deadline: required field missing"},
+		{"empty sla_deadline", func(m map[string]any) { m["sla_deadline"] = "" }, "metadata.sla_deadline: length 0 < minLength 1"},
+		{"missing finding_id", func(m map[string]any) { delete(m, "finding_id") }, "metadata.finding_id: required field missing"},
+		{"empty finding_id", func(m map[string]any) { m["finding_id"] = "" }, "metadata.finding_id: length 0 < minLength 1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateEventPayload(EventSecurityFindingSLABreach, slaBreach(tt.mutate))
+			if tt.wantReason == "" {
+				if err != nil {
+					t.Fatalf("expected the payload to validate, got: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected rejection %q, got nil", tt.wantReason)
+			}
+			if !strings.Contains(err.Error(), tt.wantReason) {
+				t.Fatalf("rejected for the wrong reason: got %v, want it to contain %q", err, tt.wantReason)
+			}
+		})
 	}
 }
